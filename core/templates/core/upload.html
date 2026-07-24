@@ -1,0 +1,176 @@
+{% extends "core/base.html" %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="split3">
+    <div class="card">
+        <h2>Generate reversal file</h2>
+
+        {% if error %}
+            <div class="error-box">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" enctype="multipart/form-data" id="upload-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_ibft_file">{{ form.ibft_file.label }}</label>
+                {{ form.ibft_file }}
+                {% if form.ibft_file.errors %}
+                    <div class="error-box">{{ form.ibft_file.errors }}</div>
+                {% endif %}
+            </div>
+            <button type="submit" class="btn" id="upload-submit-btn" style="width:100%;">Process file</button>
+        </form>
+        <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
+            Uploaded as <strong>{{ user.username }}</strong> &middot; stored as
+            <code>ibft_txn_data_&lt;date&gt;.xlsx</code>, output as
+            <code>need_to_reversal_&lt;date&gt;.xlsx</code>. New files only check the last
+            <strong>passed</strong> report for duplicate reversals.
+        </p>
+    </div>
+
+    <div class="card panel-shared">
+        <h2>Shared passed reports</h2>
+
+        <div class="table-scroll">
+        <table>
+            <thead>
+            <tr>
+                <th>Date</th>
+                <th>Username</th>
+                <th>Uploaded</th>
+                <th>Generated</th>
+                <th>Passed by</th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for log in shared_page %}
+                <tr>
+                    <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
+                    <td>{{ log.uploaded_by|default:"—" }}</td>
+                    <td>
+                        <a class="icon-btn" href="{% url 'core:download_file' log.id 'uploaded' %}" title="{{ log.uploaded_filename }}">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </a>
+                    </td>
+                    <td>
+                        <a class="icon-btn" href="{% url 'core:download_file' log.id 'generated' %}" title="{{ log.generated_filename }}">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </a>
+                    </td>
+                    <td>{{ log.passed_by|default:"—" }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="5" class="muted">No passed reports yet — mark one as passed from "My activity".</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+
+        <div class="pagination">
+            {% if shared_page.has_previous %}
+                <a href="?page={{ shared_page.previous_page_number }}#shared">&larr; Previous</a>
+            {% endif %}
+            <span class="muted">Page {{ shared_page.number }} of {{ shared_page.paginator.num_pages }}</span>
+            {% if shared_page.has_next %}
+                <a href="?page={{ shared_page.next_page_number }}#shared">Next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card panel-mine">
+        <h2>My activity</h2>
+
+        <div class="activity-list">
+        {% for log in mine_page %}
+            <div class="activity-box">
+                <div class="activity-box-head">
+                    <span class="activity-box-date">{{ log.created_at|date:"Y-m-d H:i" }}</span>
+                    {% if log.status == "SUCCESS" %}
+                        <span class="badge badge-success">Success</span>
+                    {% else %}
+                        <span class="badge badge-failed" title="{{ log.error_message }}">Failed</span>
+                    {% endif %}
+                </div>
+                <div class="activity-box-grid">
+                    <div class="activity-box-item">
+                        <div class="k">Uploaded</div>
+                        <div class="v">
+                            <a class="icon-btn" href="{% url 'core:download_file' log.id 'uploaded' %}" title="{{ log.uploaded_filename }}">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                            </a>
+                        </div>
+                    </div>
+                    <div class="activity-box-item">
+                        <div class="k">Generated</div>
+                        <div class="v">
+                            {% if log.generated_file %}
+                                <a class="icon-btn" href="{% url 'core:download_file' log.id 'generated' %}" title="{{ log.generated_filename }}">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                </a>
+                            {% else %}
+                                <span class="muted">—</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="activity-box-item">
+                        <div class="k">Passed</div>
+                        <div class="v">
+                            {% if log.status == "SUCCESS" %}
+                                <form method="post" action="{% url 'core:toggle_passed' log.id %}" style="display:inline;">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                    {% if log.passed %}
+                                        <button type="submit" class="btn btn-sm btn-toggle-on">&#10003; Passed</button>
+                                    {% else %}
+                                        <button type="submit" class="btn btn-sm btn-secondary">Mark passed</button>
+                                    {% endif %}
+                                </form>
+                            {% else %}
+                                <span class="muted">—</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="activity-box-item" style="grid-column: 1 / -1;">
+                        <div class="k">Bank statement</div>
+                        <div class="v">
+                            {% if log.status == "SUCCESS" and log.generated_file %}
+                                {% if log.bank_statement_checked %}
+                                    <span class="badge badge-success" title="{{ log.bank_statement_filename }}">
+                                        &#10003; Checked{% if log.failed_credited_count or log.already_reversed_count %} ({{ log.failed_credited_count }}+{{ log.already_reversed_count }} flagged){% endif %}
+                                    </span>
+                                {% else %}
+                                    <a class="btn btn-sm btn-secondary" href="{% url 'core:bank_statement_upload' %}">Check</a>
+                                {% endif %}
+                            {% else %}
+                                <span class="muted">—</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        {% empty %}
+            <p class="muted">You haven't uploaded anything yet.</p>
+        {% endfor %}
+        </div>
+
+        <div class="pagination">
+            {% if mine_page.has_previous %}
+                <a href="?mypage={{ mine_page.previous_page_number }}#mine">&larr; Previous</a>
+            {% endif %}
+            <span class="muted">Page {{ mine_page.number }} of {{ mine_page.paginator.num_pages }}</span>
+            {% if mine_page.has_next %}
+                <a href="?mypage={{ mine_page.next_page_number }}#mine">Next &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+document.getElementById('upload-form').addEventListener('submit', function () {
+    var btn = document.getElementById('upload-submit-btn');
+    if (btn.disabled) { return false; } // guard against double submit
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Processing…';
+});
+</script>
+{% endblock %}

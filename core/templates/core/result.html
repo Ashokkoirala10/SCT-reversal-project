@@ -1,0 +1,119 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="card">
+    <h2>Done &mdash; {{ log.generated_filename }}</h2>
+    <p class="muted">Generated from <strong>{{ log.uploaded_filename }}</strong> on {{ log.created_at }}</p>
+
+    {% if log.passed %}
+        <div class="info-box">
+            &#10003; Marked as <strong>passed</strong> by {{ log.passed_by }} on {{ log.passed_at|date:"Y-m-d H:i" }}.
+            It's now visible in the shared central report list and counted in the analytics dashboard.
+        </div>
+    {% else %}
+        <div class="info-box">
+            This report is only in <strong>your</strong> activity right now. Review the file, then mark it
+            passed to share it centrally and include it in analytics.
+        </div>
+    {% endif %}
+
+    <a class="btn" href="{% url 'core:download_file' log.id 'generated' %}">Download {{ log.generated_filename }}</a>
+    <a class="btn btn-secondary" href="{% url 'core:upload' %}">Process another file</a>
+    {% if can_toggle %}
+        <form method="post" action="{% url 'core:toggle_passed' log.id %}" style="display:inline;">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{% url 'core:result' log.id %}">
+            {% if log.passed %}
+                <button type="submit" class="btn btn-toggle-on">&#10003; Passed &mdash; unmark</button>
+            {% else %}
+                <button type="submit" class="btn" style="background:var(--green);">Mark as passed</button>
+            {% endif %}
+        </form>
+    {% endif %}
+
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ log.total_rows }}</div><div class="label">Total rows</div></div>
+        <div class="stat"><div class="num">{{ unique_new_txns }}</div><div class="label">Unique new txn(s) (excl. overlap-skipped)</div></div>
+        <div class="stat"><div class="num">{{ log.success_count }}</div><div class="label">Success (removed)</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.failed_amount|floatformat:2 }}</div><div class="label">Failed amount</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.failed_charge|floatformat:2 }}</div><div class="label">Failed charge</div></div>
+        <div class="stat"><div class="num">{{ log.failed_kept }}</div><div class="label">Failed sheet rows</div></div>
+        <div class="stat"><div class="num">{{ log.failed_insufficient_funds }}</div><div class="label">Insufficient funds (removed)</div></div>
+        <div class="stat"><div class="num">{{ log.reversal_manual_kept }}</div><div class="label">Manual reversals kept</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.reversal_manual_amount|floatformat:2 }}</div><div class="label">Manual reversal amount</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.reversal_manual_charge|floatformat:2 }}</div><div class="label">Manual reversal charge</div></div>
+        <div class="stat"><div class="num">{{ log.reversal_system_count }}</div><div class="label">System reversals (auto, not in file)</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.reversal_system_amount|floatformat:2 }}</div><div class="label">System reversal amount</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.reversal_system_charge|floatformat:2 }}</div><div class="label">System reversal charge</div></div>
+        <div class="stat"><div class="num">{{ log.coop_count }}</div><div class="label">coop rows ({{ log.coop_member_count }} members)</div></div>
+        <div class="stat"><div class="num">{{ log.imeremit_count }}</div><div class="label">imeremit rows</div></div>
+        <div class="stat"><div class="num">{{ log.cityremit_count }}</div><div class="label">cityremit rows</div></div>
+        <div class="stat"><div class="num">{{ log.timeout_count }}</div><div class="label">timeout rows</div></div>
+        <div class="stat"><div class="num">{{ log.prabhu_rerouted }}</div><div class="label">Prabhu Bank rows (special debit account)</div></div>
+        <div class="stat"><div class="num">{{ log.duplicate_skipped }}</div><div class="label">Skipped — already reversed last time</div></div>
+        <div class="stat"><div class="num">{{ log.duplicate_source_skipped }}</div><div class="label">Skipped — overlapping upload window</div></div>
+        <div class="stat"><div class="num">{{ log.unrecognized_debtor_bank_rows }}</div><div class="label">Unrecognized Debtor Bank rows</div></div>
+    </div>
+
+    {% if log.bank_statement_checked %}
+        <div class="info-box">
+            &#10003; Checked against bank statement <strong>{{ log.bank_statement_filename }}</strong>
+            by {{ log.bank_statement_checked_by }} on {{ log.bank_statement_checked_at|date:"Y-m-d H:i" }}.
+        </div>
+        <div class="stat-grid">
+            <div class="stat"><div class="num">{{ log.failed_credited_count }}</div><div class="label">Failed but credited (red-flagged)</div></div>
+            <div class="stat"><div class="num">Rs. {{ log.failed_credited_amount|floatformat:2 }}</div><div class="label">Failed but credited amount</div></div>
+            <div class="stat"><div class="num">{{ log.already_reversed_count }}</div><div class="label">Manual reversal — already reversed (red-flagged)</div></div>
+            <div class="stat"><div class="num">Rs. {{ log.already_reversed_amount|floatformat:2 }}</div><div class="label">Already-reversed amount</div></div>
+        </div>
+    {% elif log.status == "SUCCESS" and log.generated_file %}
+        <button type="button" class="btn btn-secondary" onclick="openStatementModal()">Check against bank statement</button>
+    {% endif %}
+
+    {% if log.unrecognized_debtor_banks %}
+        <div class="error-box" style="background:#fffbeb;border-color:#fcd34d;color:#92400e;">
+            Rows found with a Debtor Bank that's neither Global IME Bank nor Prabhu Bank:
+            <strong>{{ log.unrecognized_debtor_banks|join:", " }}</strong>.
+            They were still processed using the standard debit account — please double check them.
+        </div>
+    {% endif %}
+</div>
+
+{% if log.status == "SUCCESS" and log.generated_file and not log.bank_statement_checked %}
+<div class="modal-overlay" id="statement-modal-overlay" onclick="if(event.target===this) closeStatementModal()">
+    <div class="modal-box" style="max-width:460px;">
+        <button class="modal-close" onclick="closeStatementModal()" aria-label="Close">&times;</button>
+        <h3>Check against bank statement?</h3>
+        <p class="muted">
+            Upload the bank statement for this period to red-flag "failed but credited" rows and any
+            manual reversal that's already been done — recommended before this file goes out.
+        </p>
+        <form method="post" action="{% url 'core:bank_statement_upload' %}" enctype="multipart/form-data" id="statement-modal-form">
+            {% csrf_token %}
+            <input type="hidden" name="target_log" value="{{ log.id }}">
+            <div class="field">
+                <label for="statement-modal-file">Bank statement (.csv or .xlsx)</label>
+                <input type="file" name="statement_file" id="statement-modal-file" accept=".csv,.xlsx" required>
+            </div>
+            <button type="submit" class="btn" id="statement-modal-submit" style="width:100%;">Check statement</button>
+        </form>
+        <button type="button" class="btn btn-secondary" style="width:100%; margin-top:8px;" onclick="closeStatementModal()">
+            Skip for now
+        </button>
+    </div>
+</div>
+<script>
+function openStatementModal() { document.getElementById('statement-modal-overlay').classList.add('open'); }
+function closeStatementModal() { document.getElementById('statement-modal-overlay').classList.remove('open'); }
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeStatementModal(); });
+document.getElementById('statement-modal-form').addEventListener('submit', function () {
+    var btn = document.getElementById('statement-modal-submit');
+    if (btn.disabled) return false;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Checking…';
+});
+// Auto-open right after a successful run so checking against the
+// statement is the natural next step, not a separate page to remember.
+openStatementModal();
+</script>
+{% endif %}
+{% endblock %}

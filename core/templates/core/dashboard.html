@@ -1,0 +1,371 @@
+{% extends "core/base.html" %}
+{% load core_extras %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card dash-header">
+    <div class="dash-header-top">
+        <div>
+            <h2>Analytics dashboard</h2>
+            <p class="muted" style="margin-bottom:0;">
+                {% if selected_month and selected_year %}Totals for <strong>{{ selected_month_name }} {{ selected_year }}</strong>
+                {% elif selected_year %}Totals for <strong>{{ selected_year }}</strong>
+                {% elif selected_month %}Totals for <strong>{{ selected_month_name }}</strong> across all years
+                {% else %}All-time totals{% endif %}
+                across every <strong>passed</strong> file. Red-flag rows (from a bank statement check) are moved into
+                the bucket they actually belong to, not double counted.
+            </p>
+        </div>
+        <div class="dash-actions">
+            <form method="get" class="year-filter">
+                <label for="month-select">Month</label>
+                <select id="month-select" name="month" onchange="this.form.submit()">
+                    <option value="" {% if not selected_month %}selected{% endif %}>All months</option>
+                    {% for num, name in month_names %}
+                        <option value="{{ num }}" {% if num == selected_month %}selected{% endif %}>{{ name }}</option>
+                    {% endfor %}
+                </select>
+                <label for="year-select">Year</label>
+                <select id="year-select" name="year" onchange="this.form.submit()">
+                    <option value="" {% if not selected_year %}selected{% endif %}>All years</option>
+                    {% for y in available_years %}
+                        <option value="{{ y }}" {% if y == selected_year %}selected{% endif %}>{{ y }}</option>
+                    {% endfor %}
+                </select>
+            </form>
+            <a class="btn btn-secondary btn-sm" href="{% url 'core:export_dashboard_summary' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download summary CSV</a>
+        </div>
+    </div>
+
+    <div class="section-label">Volume</div>
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ totals.files }}</div><div class="label">Total files processed</div></div>
+        <div class="stat"><div class="num">{{ totals.success_count }}</div><div class="label">Total successful transactions</div></div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.success_amount|floatformat:2 }}">Rs. {{ totals.success_amount|npr }}</div><div class="label">Successful amount</div></div>
+        <div class="stat"><div class="num">{{ totals.timeout_count }}</div><div class="label">Timeout rows</div></div>
+    </div>
+
+    <div class="section-label">Failed</div>
+    <div class="stat-grid">
+        <div class="stat stat-red">
+            <div class="num">{{ totals.failed_clean_count }}</div>
+            <div class="label">Total failed (excl. failed-but-credited)</div>
+        </div>
+        <div class="stat stat-red"><div class="num" title="Rs. {{ totals.failed_clean_amount|floatformat:2 }}">Rs. {{ totals.failed_clean_amount|npr }}</div><div class="label">Failed amount</div></div>
+        <div class="stat"><div class="num">{{ totals.failed_credited_count }}</div><div class="label">Failed but credited &rarr; moves to manual reversal</div></div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.failed_credited_amount|floatformat:2 }}">Rs. {{ totals.failed_credited_amount|npr }}</div><div class="label">Failed-but-credited amount</div></div>
+    </div>
+
+    <div class="section-label">Reversal</div>
+    <div class="stat-grid">
+        <div class="stat stat-blue">
+            <div class="num">{{ totals.total_reversal_count }}</div>
+            <div class="label">Total reversal needed (manual + system + failed-credited)</div>
+        </div>
+        <div class="stat"><div class="num">{{ totals.manual_reversal_clean_count }}</div><div class="label">Manual reversal (excl. already-reversed)</div></div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.manual_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.manual_reversal_clean_amount|npr }}</div><div class="label">Manual reversal amount</div></div>
+        <div class="stat"><div class="num">{{ totals.system_reversal_clean_count }}</div><div class="label">System reversal (incl. already-reversed)</div></div>
+        <div class="stat"><div class="num" title="Rs. {{ totals.system_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.system_reversal_clean_amount|npr }}</div><div class="label">System reversal amount</div></div>
+        <div class="stat"><div class="num">{{ totals.already_reversed_count }}</div><div class="label">Already reversed (moved from manual)</div></div>
+        <div class="stat"><div class="num">{{ totals.coop_count }}</div><div class="label">coop manual reversal</div></div>
+        <div class="stat"><div class="num">{{ totals.imeremit_count }}</div><div class="label">imeremit reversal</div></div>
+        <div class="stat"><div class="num">{{ totals.cityremit_count }}</div><div class="label">cityremit manual reversal</div></div>
+    </div>
+
+    <div class="section-label">Data quality</div>
+    <div class="stat-grid">
+        <div class="stat"><div class="num">{{ totals.prabhu_rerouted }}</div><div class="label">Prabhu Bank rerouted</div></div>
+        <div class="stat"><div class="num">{{ totals.duplicate_skipped }}</div><div class="label">Double-reversals prevented</div></div>
+        <div class="stat"><div class="num">{{ totals.duplicate_source_skipped }}</div><div class="label">Overlapping-window duplicates skipped</div></div>
+        <div class="stat"><div class="num">{{ totals.unrecognized_debtor_bank_rows }}</div><div class="label">Unrecognized Debtor Bank rows</div></div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Day by day trend</h2>
+    <p class="muted">Success, failed, and total reversal (manual + system + failed-credited), by day — last 30 days. Click a point's day below for the full breakdown.</p>
+    <div id="trend-chart"></div>
+    <div class="legend" style="margin-top:4px;">
+        <span class="sw" style="background:var(--green)"></span>Success
+        <span class="sw" style="background:var(--red)"></span>Failed
+        <span class="sw" style="background:var(--primary)"></span>Total reversal
+    </div>
+</div>
+
+<div class="card">
+    <h2>Monthly report</h2>
+    <p class="muted">Same red-flag-corrected numbers, rolled up by month{% if selected_year %} for {{ selected_year }}{% endif %}.</p>
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th>Files</th>
+                    <th>Txns scanned</th>
+                    <th>Success</th>
+                    <th>Success amount</th>
+                    <th>Failed</th>
+                    <th>Failed amount</th>
+                    <th>Manual reversal</th>
+                    <th>System reversal</th>
+                    <th>Total reversal</th>
+                    <th>Timeout</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for m in monthly_stats %}
+                <tr>
+                    <td><strong>{{ m.label }}</strong></td>
+                    <td>{{ m.files }}</td>
+                    <td>{{ m.total_rows }}</td>
+                    <td>{{ m.success_count }}</td>
+                    <td title="Rs. {{ m.success_amount|floatformat:2 }}">Rs. {{ m.success_amount|npr }}</td>
+                    <td>{{ m.failed_count }}</td>
+                    <td title="Rs. {{ m.failed_amount|floatformat:2 }}">Rs. {{ m.failed_amount|npr }}</td>
+                    <td>{{ m.manual_reversal_count }}</td>
+                    <td>{{ m.system_reversal_count }}</td>
+                    <td>{{ m.total_reversal }}</td>
+                    <td>{{ m.timeout_count }}</td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="11" class="muted">No passed reports yet.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Failed: On-Us vs Off-Us breakdown</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_failed_onoffus' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download Excel (both)</a>
+    </div>
+    <p class="muted">On-Us = Debtor Bank &amp; Creditor Bank are both our own bank (Global IME Bank). Off-Us = anything
+        else. Reasons are matched case-insensitively and always sum to the bucket's total.</p>
+    <div class="split" style="grid-template-columns: 1fr 1fr;">
+        <div class="onus-block">
+            <div class="onus-head">
+                <span>On-Us</span>
+                <span>{{ onus_offus.onus.count }} rows &middot; Rs. {{ onus_offus.onus.amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                <tbody>
+                {% for r in onus_offus.onus.reasons %}
+                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="onus-block">
+            <div class="onus-head offus">
+                <span>Off-Us</span>
+                <span>{{ onus_offus.offus.count }} rows &middot; Rs. {{ onus_offus.offus.amount|npr }}</span>
+            </div>
+            <table>
+                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                <tbody>
+                {% for r in onus_offus.offus.reasons %}
+                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header-row">
+        <h2>Day by day breakdown</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_day_breakdown' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download Excel</a>
+    </div>
+    <p class="muted">Each bar shows how that day's passed file(s) split between success, failed, manual reversal, and timeout rows
+        (red-flag rows already reclassified). Click a day for the full reconciliation report.</p>
+
+    <div class="legend">
+        <span class="sw" style="background:var(--green)"></span>Success
+        <span class="sw" style="background:var(--red)"></span>Failed
+        <span class="sw" style="background:var(--primary)"></span>Manual reversal
+        <span class="sw" style="background:var(--yellow)"></span>Timeout
+    </div>
+    <br>
+
+    {% for d in daily_page %}
+        {{ d.detail|json_script:d.day_id }}
+        <div class="day-row" onclick="openDayModal('{{ d.day_id }}')">
+            <div class="day-header">
+                <strong>{{ d.day|date:"D, d M Y" }}</strong>
+                <span>{{ d.files }} file{{ d.files|pluralize }} &middot; {{ d.total_rows }} txns scanned &middot;
+                    {{ d.unique_new_txns }} unique new txn(s) &middot;
+                    {{ d.success_count }} success &middot; {{ d.total_reversal }} total reversal
+                    {% if d.data_through_at %}&middot; data through {{ d.data_through_at }}{% endif %}</span>
+            </div>
+            <div class="bar">
+                {% if d.success_count %}<span class="seg-success" style="width: {{ d.success_pct }}%" title="Success: {{ d.success_count }}"></span>{% endif %}
+                {% if d.failed_kept %}<span class="seg-failed" style="width: {{ d.failed_pct }}%" title="Failed: {{ d.failed_kept }}"></span>{% endif %}
+                {% if d.reversal_manual_kept %}<span class="seg-reversal" style="width: {{ d.reversal_pct }}%" title="Manual reversal: {{ d.reversal_manual_kept }}"></span>{% endif %}
+                {% if d.timeout_count %}<span class="seg-timeout" style="width: {{ d.timeout_pct }}%" title="Timeout: {{ d.timeout_count }}"></span>{% endif %}
+            </div>
+            <div class="legend">
+                Success: {{ d.success_count }} &nbsp;|&nbsp;
+                Failed: {{ d.failed_kept }} &nbsp;|&nbsp;
+                Manual reversal: {{ d.reversal_manual_kept }} &nbsp;|&nbsp;
+                System reversal: {{ d.reversal_system_count }} &nbsp;|&nbsp;
+                Timeout: {{ d.timeout_count }} &nbsp;|&nbsp;
+                Duplicates prevented: {{ d.duplicate_skipped }} + {{ d.duplicate_source_skipped }} &nbsp;&middot;&nbsp;
+                <span style="color:var(--primary); font-weight:600;">click for full reconciliation &rarr;</span>
+            </div>
+        </div>
+    {% empty %}
+        <p class="muted">No passed reports yet — mark a generated report as "passed" from the Generate page to see it here.</p>
+    {% endfor %}
+
+    <div class="pagination">
+        {% if daily_page.has_previous %}
+            <a href="?page={{ daily_page.previous_page_number }}">&larr; Previous</a>
+        {% endif %}
+        {% if daily_page.paginator.num_pages > 1 %}
+            <span class="muted">Page {{ daily_page.number }} of {{ daily_page.paginator.num_pages }}</span>
+        {% endif %}
+        {% if daily_page.has_next %}
+            <a href="?page={{ daily_page.next_page_number }}">Next &rarr;</a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="modal-overlay" id="day-modal-overlay" onclick="if(event.target===this) closeDayModal()">
+    <div class="modal-box">
+        <button class="modal-close" onclick="closeDayModal()" aria-label="Close">&times;</button>
+        <h3 id="day-modal-title">Reconciliation</h3>
+        <p class="muted" id="day-modal-sub"></p>
+        <div id="day-modal-body"></div>
+    </div>
+</div>
+
+{{ chart_points|json_script:"chart-points-data" }}
+<script>
+function fmtMoney(n) {
+    return "Rs. " + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function openDayModal(elementId) {
+    var el = document.getElementById(elementId);
+    if (!el) return;
+    var d = JSON.parse(el.textContent);
+
+    document.getElementById('day-modal-title').textContent = d.day;
+    document.getElementById('day-modal-sub').textContent =
+        d.files + ' passed file(s) \u00b7 ' + d.total_rows + ' transactions scanned \u00b7 ' +
+        d.unique_new_txns + ' unique new txn(s) (excl. overlap-skipped)';
+
+    var rows = [
+        {label: 'Success', count: d.success.count, amount: d.success.amount},
+        {label: 'Manual reversal (excl. red flag)', count: d.manual_reversal.count, amount: d.manual_reversal.amount, charge: d.manual_reversal.charge},
+        {label: 'System reversal (incl. already-reversed)', count: d.system_reversal.count, amount: d.system_reversal.amount, charge: d.system_reversal.charge},
+        {label: 'Failed (excl. red flag)', count: d.failed.count, amount: d.failed.amount, charge: d.failed.charge},
+        {label: 'Failed but credited', count: d.failed_credited.count, amount: d.failed_credited.amount},
+        {label: 'Already reversed', count: d.already_reversed.count, amount: d.already_reversed.amount},
+        {label: 'Timeout', count: d.timeout.count, amount: d.timeout.amount},
+    ];
+
+    var body = '<div class="recon-section"><div class="recon-head"><span>Reconciliation summary</span></div>' +
+        '<div class="table-scroll"><table><thead><tr><th>Category</th><th>Count</th><th>Amount</th><th>Charge</th></tr></thead><tbody>';
+    rows.forEach(function (r) {
+        body += '<tr><td>' + r.label + '</td><td>' + r.count + '</td><td>' + fmtMoney(r.amount) + '</td><td>' +
+            (r.charge !== undefined ? fmtMoney(r.charge) : '\u2014') + '</td></tr>';
+    });
+    body += '</tbody></table></div></div>';
+
+    if (d.top_reasons && d.top_reasons.length) {
+        body += '<div class="recon-section"><div class="recon-head"><span>Failure reasons (Source Message)</span></div>' +
+            '<div class="table-scroll"><table><thead><tr><th>Reason</th><th>Count</th><th>% of failures</th></tr></thead><tbody>';
+        d.top_reasons.forEach(function (r) {
+            body += '<tr><td>' + r.reason + '</td><td>' + r.count + '</td><td>' + r.pct + '%</td></tr>';
+        });
+        body += '</tbody></table></div></div>';
+    }
+
+    body += '<div class="recon-section"><div class="recon-head"><span>Other checks</span></div>' +
+        '<div class="table-scroll"><table><tbody>' +
+        '<tr><td>Double-reversals prevented (last-file check)</td><td>' + d.duplicate_skipped + '</td></tr>' +
+        '<tr><td>Overlapping-window duplicates skipped</td><td>' + d.duplicate_source_skipped + '</td></tr>' +
+        '<tr><td>Prabhu Bank rows rerouted</td><td>' + d.prabhu_rerouted + '</td></tr>' +
+        '<tr><td>Unrecognized Debtor Bank rows</td><td>' + d.unrecognized_debtor_bank_rows + '</td></tr>' +
+        '<tr><td>Source data through</td><td>' + (d.data_through_at || '\u2014') + '</td></tr>' +
+        '<tr><td>Processing time</td><td>' + d.processing_ms + ' ms</td></tr>' +
+        '</tbody></table></div></div>';
+
+    document.getElementById('day-modal-body').innerHTML = body;
+    document.getElementById('day-modal-overlay').classList.add('open');
+}
+
+function closeDayModal() {
+    document.getElementById('day-modal-overlay').classList.remove('open');
+}
+
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeDayModal();
+});
+
+// --- Simple inline SVG line chart — compact, no external library needed ---
+(function () {
+    var points = JSON.parse(document.getElementById('chart-points-data').textContent);
+    var container = document.getElementById('trend-chart');
+    if (!points || !points.length) {
+        container.innerHTML = '<p class="muted">No data yet.</p>';
+        return;
+    }
+
+    var width = Math.max(container.clientWidth || 900, points.length * 46);
+    var height = 170;
+    var padL = 42, padR = 12, padT = 14, padB = 26;
+    var innerW = width - padL - padR;
+    var innerH = height - padT - padB;
+
+    var maxVal = 1;
+    points.forEach(function (p) {
+        maxVal = Math.max(maxVal, p.success, p.failed, p.reversal);
+    });
+    maxVal = Math.ceil(maxVal * 1.1) || 1;
+
+    function x(i) { return padL + (points.length === 1 ? innerW / 2 : (innerW * i) / (points.length - 1)); }
+    function y(v) { return padT + innerH - (innerH * v) / maxVal; }
+
+    function pathFor(key) {
+        return points.map(function (p, i) { return (i === 0 ? 'M' : 'L') + x(i) + ',' + y(p[key]); }).join(' ');
+    }
+
+    var gridLines = '';
+    var steps = 3;
+    for (var s = 0; s <= steps; s++) {
+        var v = Math.round((maxVal / steps) * s);
+        var yy = y(v);
+        gridLines += '<line x1="' + padL + '" y1="' + yy + '" x2="' + (width - padR) + '" y2="' + yy + '" stroke="#eef1f7" stroke-width="1"/>';
+        gridLines += '<text x="' + (padL - 6) + '" y="' + (yy + 3) + '" font-size="10" fill="#8a97ad" text-anchor="end">' + v + '</text>';
+    }
+
+    var xLabels = points.map(function (p, i) {
+        var everyN = points.length > 20 ? 4 : (points.length > 10 ? 2 : 1);
+        if (i % everyN !== 0 && i !== points.length - 1) return '';
+        return '<text x="' + x(i) + '" y="' + (height - 8) + '" font-size="10" fill="#8a97ad" text-anchor="middle">' + p.day + '</text>';
+    }).join('');
+
+    function dots(key, color) {
+        return points.map(function (p, i) {
+            return '<circle cx="' + x(i) + '" cy="' + y(p[key]) + '" r="2.6" fill="' + color + '">' +
+                '<title>' + p.day + ': ' + p[key] + '</title></circle>';
+        }).join('');
+    }
+
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" style="width:100%; height:' + height + 'px;">' +
+        gridLines +
+        '<path d="' + pathFor('success') + '" fill="none" stroke="#16a34a" stroke-width="2"/>' +
+        '<path d="' + pathFor('failed') + '" fill="none" stroke="#dc2626" stroke-width="2"/>' +
+        '<path d="' + pathFor('reversal') + '" fill="none" stroke="#1d4ed8" stroke-width="2"/>' +
+        dots('success', '#16a34a') + dots('failed', '#dc2626') + dots('reversal', '#1d4ed8') +
+        xLabels +
+        '</svg>';
+
+    container.innerHTML = svg;
+})();
+</script>
+{% endblock %}

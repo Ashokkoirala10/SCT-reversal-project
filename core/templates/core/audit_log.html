@@ -1,0 +1,92 @@
+{% extends "core/base.html" %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="card-header-row">
+        <h2>Audit log</h2>
+        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_audit_log' %}">&#8595; Download Excel</a>
+    </div>
+    <p class="muted">Every file uploaded and generated, across every user, for review — admin only.</p>
+
+    <div class="table-scroll">
+    <table>
+        <thead>
+        <tr>
+            <th>#</th>
+            <th>When</th>
+            <th>Uploaded by</th>
+            <th>Source file</th>
+            <th>Generated file</th>
+            <th>Status</th>
+            <th>Passed</th>
+            <th title="Manual reversal (incl. failed-but-credited) / System reversal (incl. already-reversed) / Failed excl. credited / Timeout">Manual / System reversal / Failed (excl. credited) / Timeout</th>
+            <th>Prabhu rerouted</th>
+            <th>Unrecognized bank</th>
+            <th>Dup. skipped</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for log in page_obj %}
+            <tr>
+                <td>{{ log.id }}</td>
+                <td>{{ log.created_at|date:"Y-m-d H:i" }}</td>
+                <td>{{ log.uploaded_by|default:"—" }}</td>
+                <td>
+                    <a class="icon-btn" href="{% url 'core:download_file' log.id 'uploaded' %}" title="{{ log.uploaded_filename }}">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                </td>
+                <td>
+                    {% if log.generated_file %}
+                        <a class="icon-btn" href="{% url 'core:download_file' log.id 'generated' %}" title="{{ log.generated_filename }}">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        </a>
+                    {% else %}
+                        <span class="muted">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if log.status == "SUCCESS" %}
+                        <span class="badge badge-success">Success</span>
+                    {% else %}
+                        <span class="badge badge-failed" title="{{ log.error_message }}">Failed</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if log.passed %}
+                        <span class="badge badge-passed" title="by {{ log.passed_by }}">Passed</span>
+                    {% elif log.status == "SUCCESS" %}
+                        <span class="badge badge-pending">Pending review</span>
+                    {% else %}
+                        <span class="muted">—</span>
+                    {% endif %}
+                </td>
+                <td>{{ log.manual_reversal_clean }} / {{ log.system_reversal_clean }} / {{ log.failed_excl_credited }} / {{ log.timeout_count }}</td>
+                <td>{{ log.prabhu_rerouted }}</td>
+                <td>
+                    {% if log.unrecognized_debtor_bank_rows %}
+                        <span class="badge badge-pending" title="{{ log.unrecognized_debtor_banks|join:', ' }}">{{ log.unrecognized_debtor_bank_rows }}</span>
+                    {% else %}
+                        0
+                    {% endif %}
+                </td>
+                <td>{{ log.duplicate_skipped }}</td>
+            </tr>
+        {% empty %}
+            <tr><td colspan="11" class="muted">No files processed yet.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+
+    <div class="pagination">
+        {% if page_obj.has_previous %}
+            <a href="?page={{ page_obj.previous_page_number }}">&larr; Previous</a>
+        {% endif %}
+        <span class="muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+        {% if page_obj.has_next %}
+            <a href="?page={{ page_obj.next_page_number }}">Next &rarr;</a>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

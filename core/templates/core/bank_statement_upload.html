@@ -1,0 +1,47 @@
+{% extends "core/base.html" %}
+{% block content %}
+<div class="card" style="max-width:640px; margin:0 auto;">
+    <h2>Check against bank statement</h2>
+    <p class="muted">
+        Upload the bank statement export for the same period as an already-generated
+        reversal file. Two things get checked and <strong>red-flagged in place</strong>
+        (nothing is deleted or reordered):
+    </p>
+    <ul class="muted" style="margin-top:0; padding-left:20px; line-height:1.7;">
+        <li>Rows on the <strong>failed</strong> sheet whose Network Reference Id shows up in
+            the statement anyway (money moved despite a FAILED status) — these get red-flagged
+            and copied into a new <strong>"Failed but Credited"</strong> sheet.</li>
+        <li>Rows on the <strong>coop / imeremit / cityremit</strong> reversal sheets whose
+            underlying credit was found already reversed back out in the statement — these get
+            red-flagged so nobody double-reverses them.</li>
+    </ul>
+
+    <form method="post" enctype="multipart/form-data" id="statement-form">
+        {% csrf_token %}
+        <div class="field">
+            <label for="id_target_log">{{ form.target_log.label }}</label>
+            {{ form.target_log }}
+            {% if form.target_log.errors %}<div class="error-box">{{ form.target_log.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+            <label for="id_statement_file">{{ form.statement_file.label }}</label>
+            {{ form.statement_file }}
+            {% if form.statement_file.errors %}<div class="error-box">{{ form.statement_file.errors }}</div>{% endif %}
+        </div>
+        <button type="submit" class="btn" id="statement-submit-btn" style="width:100%;">Check statement</button>
+    </form>
+    <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
+        Expected statement columns: <code>S.N, ENTRY TYPE, REMARKS, AMOUNT, DATE</code> (.csv or .xlsx).
+        Re-uploading a statement against the same file re-checks it (a previous
+        "Failed but Credited" sheet, if any, is replaced).
+    </p>
+</div>
+<script>
+document.getElementById('statement-form').addEventListener('submit', function () {
+    var btn = document.getElementById('statement-submit-btn');
+    if (btn.disabled) { return false; }
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Checking…';
+});
+</script>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "core/base.html" %}
+{% block title %}Log in — IBFT Reversal Generator{% endblock %}
+{% block content %}
+<div class="card" style="max-width: 380px; margin: 60px auto;">
+    <h2 style="text-align:center;">Log in</h2>
+
+    {% if form.errors %}
+        <div class="error-box">Invalid username or password.</div>
+    {% endif %}
+
+    <form method="post">
+        {% csrf_token %}
+        <div class="field">
+            <label for="id_username">Username</label>
+            {{ form.username }}
+        </div>
+        <div class="field">
+            <label for="id_password">Password</label>
+            {{ form.password }}
+        </div>
+        <input type="hidden" name="next" value="{{ next }}">
+        <button type="submit" class="btn" style="width:100%;">Log in</button>
+    </form>
+</div>
+{% endblock %}
