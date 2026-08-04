@@ -2,21 +2,29 @@
 {% load core_extras %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
-<div class="card dash-header">
+<div class="card dash-topbar">
     <div class="dash-header-top">
         <div>
             <h2>Analytics dashboard</h2>
             <p class="muted" style="margin-bottom:0;">
-                {% if selected_month and selected_year %}Totals for <strong>{{ selected_month_name }} {{ selected_year }}</strong>
+                {% if selected_day and selected_month and selected_year %}Totals for <strong>{{ selected_day }} {{ selected_month_name }} {{ selected_year }}</strong>
+                {% elif selected_month and selected_year %}Totals for <strong>{{ selected_month_name }} {{ selected_year }}</strong>
                 {% elif selected_year %}Totals for <strong>{{ selected_year }}</strong>
                 {% elif selected_month %}Totals for <strong>{{ selected_month_name }}</strong> across all years
+                {% elif selected_day %}Totals for <strong>day {{ selected_day }}</strong> of every month/year
                 {% else %}All-time totals{% endif %}
-                across every <strong>passed</strong> file. Red-flag rows (from a bank statement check) are moved into
-                the bucket they actually belong to, not double counted.
+                across every <strong>passed</strong> file. 
             </p>
         </div>
         <div class="dash-actions">
-            <form method="get" class="year-filter">
+            <form method="get" class="year-filter" id="dash-filter-form">
+                <label for="day-select">Day</label>
+                <select id="day-select" name="day" onchange="this.form.submit()">
+                    <option value="" {% if not selected_day %}selected{% endif %}>Every day</option>
+                    {% for d in day_numbers %}
+                        <option value="{{ d }}" {% if d == selected_day %}selected{% endif %}>{{ d }}</option>
+                    {% endfor %}
+                </select>
                 <label for="month-select">Month</label>
                 <select id="month-select" name="month" onchange="this.form.submit()">
                     <option value="" {% if not selected_month %}selected{% endif %}>All months</option>
@@ -32,217 +40,414 @@
                     {% endfor %}
                 </select>
             </form>
-            <a class="btn btn-secondary btn-sm" href="{% url 'core:export_dashboard_summary' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download summary CSV</a>
+            <a class="btn btn-secondary btn-sm" href="{% url 'core:export_dashboard_summary' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}&day={{ selected_day|default_if_none:'' }}">&#8595; Download summary CSV</a>
         </div>
-    </div>
-
-    <div class="section-label">Volume</div>
-    <div class="stat-grid">
-        <div class="stat"><div class="num">{{ totals.files }}</div><div class="label">Total files processed</div></div>
-        <div class="stat"><div class="num">{{ totals.success_count }}</div><div class="label">Total successful transactions</div></div>
-        <div class="stat"><div class="num" title="Rs. {{ totals.success_amount|floatformat:2 }}">Rs. {{ totals.success_amount|npr }}</div><div class="label">Successful amount</div></div>
-        <div class="stat"><div class="num">{{ totals.timeout_count }}</div><div class="label">Timeout rows</div></div>
-    </div>
-
-    <div class="section-label">Failed</div>
-    <div class="stat-grid">
-        <div class="stat stat-red">
-            <div class="num">{{ totals.failed_clean_count }}</div>
-            <div class="label">Total failed (excl. failed-but-credited)</div>
-        </div>
-        <div class="stat stat-red"><div class="num" title="Rs. {{ totals.failed_clean_amount|floatformat:2 }}">Rs. {{ totals.failed_clean_amount|npr }}</div><div class="label">Failed amount</div></div>
-        <div class="stat"><div class="num">{{ totals.failed_credited_count }}</div><div class="label">Failed but credited &rarr; moves to manual reversal</div></div>
-        <div class="stat"><div class="num" title="Rs. {{ totals.failed_credited_amount|floatformat:2 }}">Rs. {{ totals.failed_credited_amount|npr }}</div><div class="label">Failed-but-credited amount</div></div>
-    </div>
-
-    <div class="section-label">Reversal</div>
-    <div class="stat-grid">
-        <div class="stat stat-blue">
-            <div class="num">{{ totals.total_reversal_count }}</div>
-            <div class="label">Total reversal needed (manual + system + failed-credited)</div>
-        </div>
-        <div class="stat"><div class="num">{{ totals.manual_reversal_clean_count }}</div><div class="label">Manual reversal (excl. already-reversed)</div></div>
-        <div class="stat"><div class="num" title="Rs. {{ totals.manual_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.manual_reversal_clean_amount|npr }}</div><div class="label">Manual reversal amount</div></div>
-        <div class="stat"><div class="num">{{ totals.system_reversal_clean_count }}</div><div class="label">System reversal (incl. already-reversed)</div></div>
-        <div class="stat"><div class="num" title="Rs. {{ totals.system_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.system_reversal_clean_amount|npr }}</div><div class="label">System reversal amount</div></div>
-        <div class="stat"><div class="num">{{ totals.already_reversed_count }}</div><div class="label">Already reversed (moved from manual)</div></div>
-        <div class="stat"><div class="num">{{ totals.coop_count }}</div><div class="label">coop manual reversal</div></div>
-        <div class="stat"><div class="num">{{ totals.imeremit_count }}</div><div class="label">imeremit reversal</div></div>
-        <div class="stat"><div class="num">{{ totals.cityremit_count }}</div><div class="label">cityremit manual reversal</div></div>
-    </div>
-
-    <div class="section-label">Data quality</div>
-    <div class="stat-grid">
-        <div class="stat"><div class="num">{{ totals.prabhu_rerouted }}</div><div class="label">Prabhu Bank rerouted</div></div>
-        <div class="stat"><div class="num">{{ totals.duplicate_skipped }}</div><div class="label">Double-reversals prevented</div></div>
-        <div class="stat"><div class="num">{{ totals.duplicate_source_skipped }}</div><div class="label">Overlapping-window duplicates skipped</div></div>
-        <div class="stat"><div class="num">{{ totals.unrecognized_debtor_bank_rows }}</div><div class="label">Unrecognized Debtor Bank rows</div></div>
     </div>
 </div>
 
-<div class="card">
-    <h2>Day by day trend</h2>
-    <p class="muted">Success, failed, and total reversal (manual + system + failed-credited), by day — last 30 days. Click a point's day below for the full breakdown.</p>
-    <div id="trend-chart"></div>
-    <div class="legend" style="margin-top:4px;">
-        <span class="sw" style="background:var(--green)"></span>Success
-        <span class="sw" style="background:var(--red)"></span>Failed
-        <span class="sw" style="background:var(--primary)"></span>Total reversal
-    </div>
-</div>
+<div class="dash-layout">
+    <aside class="dash-sidebar">
+        <div class="dash-sidebar-title">Main Menu</div>
+        <nav class="dash-menu">
+            <button type="button" class="dash-menu-item active" data-tab="overview">
+                <span class="dash-menu-icon">&#128202;</span> Overview
+            </button>
+            <button type="button" class="dash-menu-item" data-tab="monthly">
+                <span class="dash-menu-icon">&#128197;</span> Monthly report
+            </button>
+            <button type="button" class="dash-menu-item" data-tab="daily">
+                <span class="dash-menu-icon">&#128198;</span> Day report
+            </button>
+            <button type="button" class="dash-menu-item" data-tab="member">
+                <span class="dash-menu-icon">&#128100;</span> Member report
+            </button>
+            <button type="button" class="dash-menu-item" data-tab="aggregator">
+                <span class="dash-menu-icon">&#127970;</span> Aggregator report
+            </button>
+        </nav>
 
-<div class="card">
-    <h2>Monthly report</h2>
-    <p class="muted">Same red-flag-corrected numbers, rolled up by month{% if selected_year %} for {{ selected_year }}{% endif %}.</p>
-    <div class="table-scroll">
-        <table>
-            <thead>
-                <tr>
-                    <th>Month</th>
-                    <th>Files</th>
-                    <th>Txns scanned</th>
-                    <th>Success</th>
-                    <th>Success amount</th>
-                    <th>Failed</th>
-                    <th>Failed amount</th>
-                    <th>Manual reversal</th>
-                    <th>System reversal</th>
-                    <th>Total reversal</th>
-                    <th>Timeout</th>
-                </tr>
-            </thead>
-            <tbody>
-            {% for m in monthly_stats %}
-                <tr>
-                    <td><strong>{{ m.label }}</strong></td>
-                    <td>{{ m.files }}</td>
-                    <td>{{ m.total_rows }}</td>
-                    <td>{{ m.success_count }}</td>
-                    <td title="Rs. {{ m.success_amount|floatformat:2 }}">Rs. {{ m.success_amount|npr }}</td>
-                    <td>{{ m.failed_count }}</td>
-                    <td title="Rs. {{ m.failed_amount|floatformat:2 }}">Rs. {{ m.failed_amount|npr }}</td>
-                    <td>{{ m.manual_reversal_count }}</td>
-                    <td>{{ m.system_reversal_count }}</td>
-                    <td>{{ m.total_reversal }}</td>
-                    <td>{{ m.timeout_count }}</td>
-                </tr>
-            {% empty %}
-                <tr><td colspan="11" class="muted">No passed reports yet.</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</div>
+    </aside>
 
-<div class="card">
-    <div class="card-header-row">
-        <h2>Failed: On-Us vs Off-Us breakdown</h2>
-        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_failed_onoffus' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download Excel (both)</a>
-    </div>
-    <p class="muted">On-Us = Debtor Bank &amp; Creditor Bank are both our own bank (Global IME Bank). Off-Us = anything
-        else. Reasons are matched case-insensitively and always sum to the bucket's total.</p>
-    <div class="split" style="grid-template-columns: 1fr 1fr;">
-        <div class="onus-block">
-            <div class="onus-head">
-                <span>On-Us</span>
-                <span>{{ onus_offus.onus.count }} rows &middot; Rs. {{ onus_offus.onus.amount|npr }}</span>
+    <section class="dash-content">
+        <!-- ===================== OVERVIEW ===================== -->
+        <div class="dash-panel" id="tab-overview">
+            <div class="card">
+                <div class="section-label" style="margin-top:0;">Volume</div>
+                <div class="stat-grid">
+                    <div class="stat"><div class="num">{{ totals.files }}</div><div class="label">Total files processed</div></div>
+                    <div class="stat"><div class="num">{{ totals.success_count }}</div><div class="label">Total successful transactions</div></div>
+                    <div class="stat"><div class="num" title="Rs. {{ totals.success_amount|floatformat:2 }}">Rs. {{ totals.success_amount|npr }}</div><div class="label">Successful amount</div></div>
+                    <div class="stat"><div class="num">{{ totals.timeout_count }}</div><div class="label">Timeout rows</div></div>
+                </div>
+
+                <div class="section-label">Failed</div>
+                <div class="stat-grid">
+                    <div class="stat stat-red">
+                        <div class="num">{{ totals.failed_clean_count }}</div>
+                        <div class="label">Total failed (excl. failed-but-credited)</div>
+                    </div>
+                    <div class="stat stat-red"><div class="num" title="Rs. {{ totals.failed_clean_amount|floatformat:2 }}">Rs. {{ totals.failed_clean_amount|npr }}</div><div class="label">Failed amount</div></div>
+                    <div class="stat"><div class="num">{{ totals.failed_credited_count }}</div><div class="label">Failed but credited &rarr; moves to manual reversal</div></div>
+                    <div class="stat"><div class="num" title="Rs. {{ totals.failed_credited_amount|floatformat:2 }}">Rs. {{ totals.failed_credited_amount|npr }}</div><div class="label">Failed-but-credited amount</div></div>
+                </div>
+
+                <div class="section-label">Reversal</div>
+                <div class="stat-grid">
+                    <div class="stat stat-blue">
+                        <div class="num">{{ totals.total_reversal_count }}</div>
+                        <div class="label">Total reversal needed (manual + system + failed-credited)</div>
+                    </div>
+                    <div class="stat"><div class="num">{{ totals.manual_reversal_clean_count }}</div><div class="label">Manual reversal (excl. already-reversed)</div></div>
+                    <div class="stat"><div class="num" title="Rs. {{ totals.manual_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.manual_reversal_clean_amount|npr }}</div><div class="label">Manual reversal amount</div></div>
+                    <div class="stat"><div class="num">{{ totals.system_reversal_clean_count }}</div><div class="label">System reversal (incl. already-reversed)</div></div>
+                    <div class="stat"><div class="num" title="Rs. {{ totals.system_reversal_clean_amount|floatformat:2 }}">Rs. {{ totals.system_reversal_clean_amount|npr }}</div><div class="label">System reversal amount</div></div>
+                    <div class="stat"><div class="num">{{ totals.already_reversed_count }}</div><div class="label">Already reversed (moved from manual)</div></div>
+                    <div class="stat"><div class="num">{{ totals.coop_count }}</div><div class="label">coop manual reversal</div></div>
+                    <div class="stat"><div class="num">{{ totals.imeremit_count }}</div><div class="label">imeremit reversal</div></div>
+                    <div class="stat"><div class="num">{{ totals.cityremit_count }}</div><div class="label">cityremit manual reversal</div></div>
+                </div>
+
+                <div class="section-label">Data quality</div>
+                <div class="stat-grid">
+                    <div class="stat"><div class="num">{{ totals.prabhu_rerouted }}</div><div class="label">Prabhu Bank reversal</div></div>
+                    <div class="stat"><div class="num">{{ totals.duplicate_skipped }}</div><div class="label">Double-reversals prevented</div></div>
+                    <div class="stat"><div class="num">{{ totals.duplicate_source_skipped }}</div><div class="label">Overlapping-window duplicates skipped</div></div>
+                    <div class="stat"><div class="num">{{ totals.unrecognized_debtor_bank_rows }}</div><div class="label">Unrecognized Debtor Bank rows</div></div>
+                </div>
             </div>
-            <table>
-                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
-                <tbody>
-                {% for r in onus_offus.onus.reasons %}
-                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+
+            <div class="card">
+                <h2>Day by day trend</h2>
+                <p class="muted">Success, failed, and total reversal (manual + system + failed-credited), by day — last 30 days.</p>
+                <div id="trend-chart"></div>
+                <div class="legend" style="margin-top:4px;">
+                    <span class="sw" style="background:var(--green)"></span>Success
+                    <span class="sw" style="background:var(--red)"></span>Failed
+                    <span class="sw" style="background:var(--primary)"></span>Total reversal
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header-row">
+                    <h2>Failed: On-Us vs Off-Us breakdown</h2>
+                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_failed_onoffus' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}&day={{ selected_day|default_if_none:'' }}">&#8595; Download Excel (both)</a>
+                </div>
+                <p class="muted"></p>
+                <div class="split" style="grid-template-columns: 1fr 1fr;">
+                    <div class="onus-block">
+                        <div class="onus-head">
+                            <span>On-Us</span>
+                            <span>{{ onus_offus.onus.count }} rows &middot; Rs. {{ onus_offus.onus.amount|npr }}</span>
+                        </div>
+                        <table>
+                            <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                            <tbody>
+                            {% for r in onus_offus.onus.reasons %}
+                                <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="onus-block">
+                        <div class="onus-head offus">
+                            <span>Off-Us</span>
+                            <span>{{ onus_offus.offus.count }} rows &middot; Rs. {{ onus_offus.offus.amount|npr }}</span>
+                        </div>
+                        <table>
+                            <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
+                            <tbody>
+                            {% for r in onus_offus.offus.reasons %}
+                                <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
+                            {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== MONTHLY REPORT ===================== -->
+        <div class="dash-panel" id="tab-monthly" style="display:none;">
+            <div class="card">
+                <h2>Monthly report</h2>
+                <p class="muted">Same red-flag-corrected numbers, rolled up by month{% if selected_year %} for {{ selected_year }}{% endif %}.</p>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Month</th>
+                                <th>Files</th>
+                                <th>Txns scanned</th>
+                                <th>Success</th>
+                                <th>Success amount</th>
+                                <th>Failed</th>
+                                <th>Failed amount</th>
+                                <th>Manual reversal</th>
+                                <th>System reversal</th>
+                                <th>Total reversal</th>
+                                <th>Timeout</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for m in monthly_stats %}
+                            <tr>
+                                <td><strong>{{ m.label }}</strong></td>
+                                <td>{{ m.files }}</td>
+                                <td>{{ m.total_rows }}</td>
+                                <td>{{ m.success_count }}</td>
+                                <td title="Rs. {{ m.success_amount|floatformat:2 }}">Rs. {{ m.success_amount|npr }}</td>
+                                <td>{{ m.failed_count }}</td>
+                                <td title="Rs. {{ m.failed_amount|floatformat:2 }}">Rs. {{ m.failed_amount|npr }}</td>
+                                <td>{{ m.manual_reversal_count }}</td>
+                                <td>{{ m.system_reversal_count }}</td>
+                                <td>{{ m.total_reversal }}</td>
+                                <td>{{ m.timeout_count }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="11" class="muted">No passed reports yet.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== DAY REPORT ===================== -->
+        <div class="dash-panel" id="tab-daily" style="display:none;">
+            <div class="card">
+                <div class="card-header-row">
+                    <h2>Day by day breakdown</h2>
+                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_day_breakdown' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}&day={{ selected_day|default_if_none:'' }}">&#8595; Download Excel</a>
+                </div>
+                <p class="muted"> Click a day for the full reconciliation report.</p>
+
+                <div class="legend">
+                    <span class="sw" style="background:var(--green)"></span>Success
+                    <span class="sw" style="background:var(--red)"></span>Failed
+                    <span class="sw" style="background:var(--primary)"></span>Total reversal
+                </div>
+                <br>
+
+                {% for d in daily_page %}
+                    {{ d.detail|json_script:d.day_id }}
+                    <div class="day-row" onclick="openDayModal('{{ d.day_id }}')">
+                        <div class="day-header">
+                            <strong>{{ d.day|date:"D, d M Y" }}</strong>
+                            <span>{{ d.files }} file{{ d.files|pluralize }} &middot; {{ d.total_rows }} txns scanned &middot;
+                                {{ d.unique_new_txns }} unique new txn(s) &middot;
+                                {{ d.success_count }} success &middot; 
+                                {% if d.data_through_at %}&middot; data through {{ d.data_through_at }}{% endif %}</span>
+                        </div>
+                        <div class="bar">
+                            {% if d.success_count %}<span class="seg-success" style="width: {{ d.success_pct }}%" title="Success: {{ d.success_count }}"></span>{% endif %}
+                            {% if d.failed_kept %}<span class="seg-failed" style="width: {{ d.failed_pct }}%" title="Failed: {{ d.failed_kept }}"></span>{% endif %}
+                            {% if d.total_reversal %}<span class="seg-reversal" style="width: {{ d.reversal_pct }}%" title="Total reversal: {{ d.total_reversal }}"></span>{% endif %}
+                        </div>
+                        <div class="legend">
+
+                            Failed: {{ d.failed_kept }} &nbsp;|&nbsp;
+                            Total reversal: {{ d.total_reversal }} (manual {{ d.reversal_manual_kept }} + system {{ d.reversal_system_count }}) &nbsp;|&nbsp;
+                            Timeout: {{ d.timeout_count }} &nbsp;|&nbsp;
+                            Duplicates prevented: {{ d.duplicate_skipped }} + {{ d.duplicate_source_skipped }} &nbsp;&middot;&nbsp;
+                            <span style="color:var(--primary); font-weight:600;">click for full reconciliation &rarr;</span>
+                        </div>
+                    </div>
+                {% empty %}
+                    <p class="muted">No passed reports yet — mark a generated report as "passed" from the Generate page to see it here.</p>
                 {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        <div class="onus-block">
-            <div class="onus-head offus">
-                <span>Off-Us</span>
-                <span>{{ onus_offus.offus.count }} rows &middot; Rs. {{ onus_offus.offus.amount|npr }}</span>
-            </div>
-            <table>
-                <thead><tr><th>Reason</th><th>Count</th><th>%</th></tr></thead>
-                <tbody>
-                {% for r in onus_offus.offus.reasons %}
-                    <tr><td>{{ r.reason }}</td><td>{{ r.count }}</td><td>{{ r.pct }}%</td></tr>
-                {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
 
-<div class="card">
-    <div class="card-header-row">
-        <h2>Day by day breakdown</h2>
-        <a class="btn btn-secondary btn-sm" href="{% url 'core:export_day_breakdown' %}?year={{ selected_year|default_if_none:'' }}&month={{ selected_month|default_if_none:'' }}">&#8595; Download Excel</a>
-    </div>
-    <p class="muted">Each bar shows how that day's passed file(s) split between success, failed, manual reversal, and timeout rows
-        (red-flag rows already reclassified). Click a day for the full reconciliation report.</p>
-
-    <div class="legend">
-        <span class="sw" style="background:var(--green)"></span>Success
-        <span class="sw" style="background:var(--red)"></span>Failed
-        <span class="sw" style="background:var(--primary)"></span>Manual reversal
-        <span class="sw" style="background:var(--yellow)"></span>Timeout
-    </div>
-    <br>
-
-    {% for d in daily_page %}
-        {{ d.detail|json_script:d.day_id }}
-        <div class="day-row" onclick="openDayModal('{{ d.day_id }}')">
-            <div class="day-header">
-                <strong>{{ d.day|date:"D, d M Y" }}</strong>
-                <span>{{ d.files }} file{{ d.files|pluralize }} &middot; {{ d.total_rows }} txns scanned &middot;
-                    {{ d.unique_new_txns }} unique new txn(s) &middot;
-                    {{ d.success_count }} success &middot; {{ d.total_reversal }} total reversal
-                    {% if d.data_through_at %}&middot; data through {{ d.data_through_at }}{% endif %}</span>
-            </div>
-            <div class="bar">
-                {% if d.success_count %}<span class="seg-success" style="width: {{ d.success_pct }}%" title="Success: {{ d.success_count }}"></span>{% endif %}
-                {% if d.failed_kept %}<span class="seg-failed" style="width: {{ d.failed_pct }}%" title="Failed: {{ d.failed_kept }}"></span>{% endif %}
-                {% if d.reversal_manual_kept %}<span class="seg-reversal" style="width: {{ d.reversal_pct }}%" title="Manual reversal: {{ d.reversal_manual_kept }}"></span>{% endif %}
-                {% if d.timeout_count %}<span class="seg-timeout" style="width: {{ d.timeout_pct }}%" title="Timeout: {{ d.timeout_count }}"></span>{% endif %}
-            </div>
-            <div class="legend">
-                Success: {{ d.success_count }} &nbsp;|&nbsp;
-                Failed: {{ d.failed_kept }} &nbsp;|&nbsp;
-                Manual reversal: {{ d.reversal_manual_kept }} &nbsp;|&nbsp;
-                System reversal: {{ d.reversal_system_count }} &nbsp;|&nbsp;
-                Timeout: {{ d.timeout_count }} &nbsp;|&nbsp;
-                Duplicates prevented: {{ d.duplicate_skipped }} + {{ d.duplicate_source_skipped }} &nbsp;&middot;&nbsp;
-                <span style="color:var(--primary); font-weight:600;">click for full reconciliation &rarr;</span>
+                <div class="pagination">
+                    {% if daily_page.has_previous %}
+                        <a href="?page={{ daily_page.previous_page_number }}#daily">&larr; Previous</a>
+                    {% endif %}
+                    {% if daily_page.paginator.num_pages > 1 %}
+                        <span class="muted">Page {{ daily_page.number }} of {{ daily_page.paginator.num_pages }}</span>
+                    {% endif %}
+                    {% if daily_page.has_next %}
+                        <a href="?page={{ daily_page.next_page_number }}#daily">Next &rarr;</a>
+                    {% endif %}
+                </div>
             </div>
         </div>
-    {% empty %}
-        <p class="muted">No passed reports yet — mark a generated report as "passed" from the Generate page to see it here.</p>
-    {% endfor %}
 
-    <div class="pagination">
-        {% if daily_page.has_previous %}
-            <a href="?page={{ daily_page.previous_page_number }}">&larr; Previous</a>
-        {% endif %}
-        {% if daily_page.paginator.num_pages > 1 %}
-            <span class="muted">Page {{ daily_page.number }} of {{ daily_page.paginator.num_pages }}</span>
-        {% endif %}
-        {% if daily_page.has_next %}
-            <a href="?page={{ daily_page.next_page_number }}">Next &rarr;</a>
-        {% endif %}
-    </div>
+        <!-- ===================== MEMBER-WISE REPORT ===================== -->
+        <div class="dash-panel" id="tab-member" style="display:none;">
+            <div class="card">
+                <h2>Member-wise report</h2>
+
+
+                <form method="get" class="year-filter" style="margin-bottom:14px;">
+                    {% if selected_year %}<input type="hidden" name="year" value="{{ selected_year }}">{% endif %}
+                    {% if selected_month %}<input type="hidden" name="month" value="{{ selected_month }}">{% endif %}
+                    <label for="member-q">Member</label>
+                    <input type="text" id="member-q" name="member_q" value="{{ member_query }}" placeholder="Search member name…" style="max-width:200px; margin-top:0;">
+                    <label for="member-from">From</label>
+                    <input type="date" id="member-from" name="member_from" value="{{ member_from }}" style="margin-top:0;">
+                    <label for="member-to">To</label>
+                    <input type="date" id="member-to" name="member_to" value="{{ member_to }}" style="margin-top:0;">
+                    <button type="submit" class="btn btn-secondary btn-sm">Search</button>
+                    {% if member_query or member_from or member_to %}<a class="btn btn-secondary btn-sm" href="?{% if selected_year %}year={{ selected_year }}&{% endif %}{% if selected_month %}month={{ selected_month }}&{% endif %}#member">Clear</a>{% endif %}
+                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_member_report' %}?{% if selected_year %}year={{ selected_year }}&{% endif %}{% if selected_month %}month={{ selected_month }}&{% endif %}{% if member_query %}member_q={{ member_query }}&{% endif %}{% if member_from %}member_from={{ member_from }}&{% endif %}{% if member_to %}member_to={{ member_to }}&{% endif %}">&#8595; Download Excel</a>
+                </form>
+
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Member</th>
+                                <th>Success</th>
+                                <th>Success amount</th>
+                                <th>Failed</th>
+                                <th>Failed amount</th>
+                                <th>Reversal</th>
+                                <th>Reversal amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for r in member_page %}
+                            <tr>
+                                <td><strong>{{ r.member_name }}</strong></td>
+                                <td>{{ r.success_count }}</td>
+                                <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                                <td>{{ r.failed_count }}</td>
+                                <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                                <td>{{ r.reversal_count }}</td>
+                                <td title="Rs. {{ r.reversal_amount|floatformat:2 }}">Rs. {{ r.reversal_amount|npr }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="7" class="muted">No passed reports yet{% if member_query %} matching "{{ member_query }}"{% endif %}.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="pagination">
+                    {% if member_page.has_previous %}
+                        <a href="?member_page={{ member_page.previous_page_number }}{% if selected_year %}&year={{ selected_year }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}{% if member_query %}&member_q={{ member_query }}{% endif %}{% if member_from %}&member_from={{ member_from }}{% endif %}{% if member_to %}&member_to={{ member_to }}{% endif %}#member">&larr; Previous</a>
+                    {% endif %}
+                    {% if member_page.paginator.num_pages > 1 %}
+                        <span class="muted">Page {{ member_page.number }} of {{ member_page.paginator.num_pages }}</span>
+                    {% endif %}
+                    {% if member_page.has_next %}
+                        <a href="?member_page={{ member_page.next_page_number }}{% if selected_year %}&year={{ selected_year }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}{% if member_query %}&member_q={{ member_query }}{% endif %}{% if member_from %}&member_from={{ member_from }}{% endif %}{% if member_to %}&member_to={{ member_to }}{% endif %}#member">Next &rarr;</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- ===================== AGGREGATOR-WISE REPORT ===================== -->
+        <div class="dash-panel" id="tab-aggregator" style="display:none;">
+            <div class="card">
+                <h2>Aggregator-wise report</h2>
+                
+
+                <form method="get" class="year-filter" style="margin-bottom:14px;">
+                    {% if selected_year %}<input type="hidden" name="year" value="{{ selected_year }}">{% endif %}
+                    {% if selected_month %}<input type="hidden" name="month" value="{{ selected_month }}">{% endif %}
+                    <label for="aggregator-q">Aggregator</label>
+                    <input type="text" id="aggregator-q" name="aggregator_q" value="{{ aggregator_query }}" placeholder="Search aggregator name…" style="max-width:200px; margin-top:0;">
+                    <label for="aggregator-from">From</label>
+                    <input type="date" id="aggregator-from" name="aggregator_from" value="{{ aggregator_from }}" style="margin-top:0;">
+                    <label for="aggregator-to">To</label>
+                    <input type="date" id="aggregator-to" name="aggregator_to" value="{{ aggregator_to }}" style="margin-top:0;">
+                    <button type="submit" class="btn btn-secondary btn-sm">Search</button>
+                    {% if aggregator_query or aggregator_from or aggregator_to %}<a class="btn btn-secondary btn-sm" href="?{% if selected_year %}year={{ selected_year }}&{% endif %}{% if selected_month %}month={{ selected_month }}&{% endif %}#aggregator">Clear</a>{% endif %}
+                    <a class="btn btn-secondary btn-sm" href="{% url 'core:export_aggregator_report' %}?{% if selected_year %}year={{ selected_year }}&{% endif %}{% if selected_month %}month={{ selected_month }}&{% endif %}{% if aggregator_query %}aggregator_q={{ aggregator_query }}&{% endif %}{% if aggregator_from %}aggregator_from={{ aggregator_from }}&{% endif %}{% if aggregator_to %}aggregator_to={{ aggregator_to }}&{% endif %}">&#8595; Download Excel</a>
+                </form>
+
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Aggregator</th>
+                                <th>Success</th>
+                                <th>Success amount</th>
+                                <th>Failed</th>
+                                <th>Failed amount</th>
+                                <th>Reversal</th>
+                                <th>Reversal amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for r in aggregator_page %}
+                            <tr>
+                                <td><strong>{{ r.aggregator }}</strong></td>
+                                <td>{{ r.success_count }}</td>
+                                <td title="Rs. {{ r.success_amount|floatformat:2 }}">Rs. {{ r.success_amount|npr }}</td>
+                                <td>{{ r.failed_count }}</td>
+                                <td title="Rs. {{ r.failed_amount|floatformat:2 }}">Rs. {{ r.failed_amount|npr }}</td>
+                                <td>{{ r.reversal_count }}</td>
+                                <td title="Rs. {{ r.reversal_amount|floatformat:2 }}">Rs. {{ r.reversal_amount|npr }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr><td colspan="7" class="muted">No passed reports yet{% if aggregator_query %} matching "{{ aggregator_query }}"{% endif %}.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="pagination">
+                    {% if aggregator_page.has_previous %}
+                        <a href="?aggregator_page={{ aggregator_page.previous_page_number }}{% if selected_year %}&year={{ selected_year }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}{% if aggregator_from %}&aggregator_from={{ aggregator_from }}{% endif %}{% if aggregator_to %}&aggregator_to={{ aggregator_to }}{% endif %}#aggregator">&larr; Previous</a>
+                    {% endif %}
+                    {% if aggregator_page.paginator.num_pages > 1 %}
+                        <span class="muted">Page {{ aggregator_page.number }} of {{ aggregator_page.paginator.num_pages }}</span>
+                    {% endif %}
+                    {% if aggregator_page.has_next %}
+                        <a href="?aggregator_page={{ aggregator_page.next_page_number }}{% if selected_year %}&year={{ selected_year }}{% endif %}{% if selected_month %}&month={{ selected_month }}{% endif %}{% if aggregator_query %}&aggregator_q={{ aggregator_query }}{% endif %}{% if aggregator_from %}&aggregator_from={{ aggregator_from }}{% endif %}{% if aggregator_to %}&aggregator_to={{ aggregator_to }}{% endif %}#aggregator">Next &rarr;</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+    </section>
 </div>
 
 <div class="modal-overlay" id="day-modal-overlay" onclick="if(event.target===this) closeDayModal()">
     <div class="modal-box">
         <button class="modal-close" onclick="closeDayModal()" aria-label="Close">&times;</button>
-        <h3 id="day-modal-title">Reconciliation</h3>
-        <p class="muted" id="day-modal-sub"></p>
+        <div class="modal-head-row">
+            <div>
+                <h3 id="day-modal-title">Reconciliation</h3>
+                <p class="muted" id="day-modal-sub"></p>
+            </div>
+            <a class="btn btn-secondary btn-sm" id="day-modal-download" href="#">&#8595; Download this day</a>
+        </div>
         <div id="day-modal-body"></div>
     </div>
 </div>
 
 {{ chart_points|json_script:"chart-points-data" }}
 <script>
+// --- Sidebar tab switching -------------------------------------------------
+(function () {
+    var buttons = document.querySelectorAll('.dash-menu-item');
+    var panels = document.querySelectorAll('.dash-panel');
+    var validTabs = Array.prototype.map.call(buttons, function (b) { return b.getAttribute('data-tab'); });
+
+    function activate(tab, scroll) {
+        if (validTabs.indexOf(tab) === -1) tab = 'overview';
+        buttons.forEach(function (b) {
+            b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+        });
+        panels.forEach(function (p) {
+            p.style.display = (p.id === 'tab-' + tab) ? '' : 'none';
+        });
+        if (scroll) { window.scrollTo({top: 0, behavior: 'smooth'}); }
+    }
+
+    buttons.forEach(function (b) {
+        b.addEventListener('click', function () {
+            var tab = b.getAttribute('data-tab');
+            activate(tab, false);
+            window.location.hash = tab;
+        });
+    });
+
+    var initial = (window.location.hash || '').replace('#', '');
+    activate(initial || 'overview', false);
+})();
+
 function fmtMoney(n) {
     return "Rs. " + Number(n).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
@@ -256,12 +461,14 @@ function openDayModal(elementId) {
     document.getElementById('day-modal-sub').textContent =
         d.files + ' passed file(s) \u00b7 ' + d.total_rows + ' transactions scanned \u00b7 ' +
         d.unique_new_txns + ' unique new txn(s) (excl. overlap-skipped)';
+    document.getElementById('day-modal-download').href =
+        '{% url "core:export_day_breakdown" %}?day=' + encodeURIComponent(d.day_iso);
 
     var rows = [
         {label: 'Success', count: d.success.count, amount: d.success.amount},
-        {label: 'Manual reversal (excl. red flag)', count: d.manual_reversal.count, amount: d.manual_reversal.amount, charge: d.manual_reversal.charge},
-        {label: 'System reversal (incl. already-reversed)', count: d.system_reversal.count, amount: d.system_reversal.amount, charge: d.system_reversal.charge},
-        {label: 'Failed (excl. red flag)', count: d.failed.count, amount: d.failed.amount, charge: d.failed.charge},
+        {label: 'Manual reversal', count: d.manual_reversal.count, amount: d.manual_reversal.amount, charge: d.manual_reversal.charge},
+        {label: 'System reversal ', count: d.system_reversal.count, amount: d.system_reversal.amount, charge: d.system_reversal.charge},
+        {label: 'Failed ', count: d.failed.count, amount: d.failed.amount, charge: d.failed.charge},
         {label: 'Failed but credited', count: d.failed_credited.count, amount: d.failed_credited.amount},
         {label: 'Already reversed', count: d.already_reversed.count, amount: d.already_reversed.amount},
         {label: 'Timeout', count: d.timeout.count, amount: d.timeout.amount},
@@ -288,7 +495,7 @@ function openDayModal(elementId) {
         '<div class="table-scroll"><table><tbody>' +
         '<tr><td>Double-reversals prevented (last-file check)</td><td>' + d.duplicate_skipped + '</td></tr>' +
         '<tr><td>Overlapping-window duplicates skipped</td><td>' + d.duplicate_source_skipped + '</td></tr>' +
-        '<tr><td>Prabhu Bank rows rerouted</td><td>' + d.prabhu_rerouted + '</td></tr>' +
+        '<tr><td>Prabhu Bank reversal rows</td><td>' + d.prabhu_rerouted + '</td></tr>' +
         '<tr><td>Unrecognized Debtor Bank rows</td><td>' + d.unrecognized_debtor_bank_rows + '</td></tr>' +
         '<tr><td>Source data through</td><td>' + (d.data_through_at || '\u2014') + '</td></tr>' +
         '<tr><td>Processing time</td><td>' + d.processing_ms + ' ms</td></tr>' +

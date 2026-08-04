@@ -1,20 +1,14 @@
 {% extends "core/base.html" %}
 {% block content %}
-<div class="card" style="max-width:640px; margin:0 auto;">
+<div class="card" style="max-width:640px; margin:0 auto; max-height:100%; overflow-y:auto;">
     <h2>Check against bank statement</h2>
-    <p class="muted">
-        Upload the bank statement export for the same period as an already-generated
-        reversal file. Two things get checked and <strong>red-flagged in place</strong>
-        (nothing is deleted or reordered):
-    </p>
-    <ul class="muted" style="margin-top:0; padding-left:20px; line-height:1.7;">
-        <li>Rows on the <strong>failed</strong> sheet whose Network Reference Id shows up in
-            the statement anyway (money moved despite a FAILED status) — these get red-flagged
-            and copied into a new <strong>"Failed but Credited"</strong> sheet.</li>
-        <li>Rows on the <strong>coop / imeremit / cityremit</strong> reversal sheets whose
-            underlying credit was found already reversed back out in the statement — these get
-            red-flagged so nobody double-reverses them.</li>
-    </ul>
+
+
+    <div class="info-box">
+        You can upload a <strong>Global IME Bank</strong> statement, a <strong>Prabhu Bank</strong> statement
+        (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> - whatever you provide is
+        combined into a single file automatically and checked together. 
+    </div>
 
     <form method="post" enctype="multipart/form-data" id="statement-form">
         {% csrf_token %}
@@ -24,18 +18,51 @@
             {% if form.target_log.errors %}<div class="error-box">{{ form.target_log.errors }}</div>{% endif %}
         </div>
         <div class="field">
-            <label for="id_statement_file">{{ form.statement_file.label }}</label>
-            {{ form.statement_file }}
-            {% if form.statement_file.errors %}<div class="error-box">{{ form.statement_file.errors }}</div>{% endif %}
+            <label for="id_global_statement_files">{{ form.global_statement_files.label }}</label>
+            {{ form.global_statement_files }}
+            <div class="file-chip-list" id="global-chip-list"></div>
+            <p class="muted" style="font-size:12.5px; margin:6px 0 0;">{{ form.global_statement_files.help_text }}</p>
+            {% if form.global_statement_files.errors %}<div class="error-box">{{ form.global_statement_files.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+            <label for="id_prabhu_statement_files">{{ form.prabhu_statement_files.label }}</label>
+            {{ form.prabhu_statement_files }}
+            <div class="file-chip-list" id="prabhu-chip-list"></div>
+            <p class="muted" style="font-size:12.5px; margin:6px 0 0;">
+                {{ form.prabhu_statement_files.help_text }}
+               
+            </p>
+            {% if form.prabhu_statement_files.errors %}<div class="error-box">{{ form.prabhu_statement_files.errors }}</div>{% endif %}
         </div>
         <button type="submit" class="btn" id="statement-submit-btn" style="width:100%;">Check statement</button>
     </form>
     <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
         Expected statement columns: <code>S.N, ENTRY TYPE, REMARKS, AMOUNT, DATE</code> (.csv or .xlsx).
-        Re-uploading a statement against the same file re-checks it (a previous
-        "Failed but Credited" sheet, if any, is replaced).
+
     </p>
 </div>
+<style>
+/* This page is meant to fit on one screen — the whole document should
+   never scroll, only the card's own content area (if it ever grows
+   taller than the viewport, e.g. lots of validation errors + file
+   chips) scrolls internally instead. */
+html, body { height: 100%; overflow: hidden; }
+body { display: flex; flex-direction: column; }
+header { flex: 0 0 auto; }
+main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+.file-chip-list { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.file-chip-list:empty { margin-top:0; }
+.file-chip {
+    display:inline-flex; align-items:center; gap:6px;
+    background:#eef2ff; color:#3730a3; border:1px solid #c7d2fe;
+    border-radius:14px; padding:3px 6px 3px 10px; font-size:12.5px; line-height:1.6;
+}
+.file-chip button {
+    background:none; border:none; color:#3730a3; cursor:pointer;
+    font-size:15px; line-height:1; padding:0 4px; font-weight:bold;
+}
+.file-chip button:hover { color:#9c0006; }
+</style>
 <script>
 document.getElementById('statement-form').addEventListener('submit', function () {
     var btn = document.getElementById('statement-submit-btn');
@@ -43,5 +70,65 @@ document.getElementById('statement-form').addEventListener('submit', function ()
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Checking…';
 });
+
+// Lets the user build up a multi-file selection across several separate
+// "Choose files" clicks instead of each click wiping out the previous
+// pick (the default browser behaviour for <input type="file" multiple>,
+// which is the likely cause of "only one statement gets uploaded" when
+// people pick daily Prabhu exports one at a time rather than
+// ctrl/shift-clicking all of them in a single dialog).
+function setupAccumulatingFileInput(inputId, chipListId, maxFiles) {
+    var input = document.getElementById(inputId);
+    var chipList = document.getElementById(chipListId);
+    if (!input || !chipList) { return; }
+    var selected = [];
+
+    function render() {
+        chipList.innerHTML = '';
+        selected.forEach(function (file, idx) {
+            var chip = document.createElement('span');
+            chip.className = 'file-chip';
+            var label = document.createElement('span');
+            label.textContent = file.name;
+            chip.appendChild(label);
+            var removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.textContent = '\u00d7';
+            removeBtn.setAttribute('aria-label', 'Remove ' + file.name);
+            removeBtn.addEventListener('click', function () {
+                selected.splice(idx, 1);
+                sync();
+            });
+            chip.appendChild(removeBtn);
+            chipList.appendChild(chip);
+        });
+    }
+
+    function sync() {
+        if (typeof DataTransfer !== 'undefined') {
+            var dt = new DataTransfer();
+            selected.forEach(function (file) { dt.items.add(file); });
+            input.files = dt.files;
+        }
+        render();
+    }
+
+    input.addEventListener('change', function () {
+        var incoming = Array.prototype.slice.call(input.files || []);
+        incoming.forEach(function (file) {
+            var alreadyHave = selected.some(function (f) {
+                return f.name === file.name && f.size === file.size && f.lastModified === file.lastModified;
+            });
+            if (!alreadyHave) { selected.push(file); }
+        });
+        if (selected.length > maxFiles) {
+            selected = selected.slice(0, maxFiles);
+        }
+        sync();
+    });
+}
+
+setupAccumulatingFileInput('id_global_statement_files', 'global-chip-list', 1);
+setupAccumulatingFileInput('id_prabhu_statement_files', 'prabhu-chip-list', 4);
 </script>
 {% endblock %}

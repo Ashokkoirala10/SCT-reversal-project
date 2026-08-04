@@ -118,7 +118,17 @@
         display: grid;
         grid-template-columns: 300px 1.6fr 1fr;
         gap: 20px;
-        align-items: start;
+        align-items: stretch;
+    }
+    .split3 .card { display: flex; flex-direction: column; }
+    .split3 .panel-shared, .split3 .panel-mine { max-height: 640px; }
+    .split3 .scroll-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        margin: 0 -4px;
+        padding: 0 4px;
     }
     @media (max-width: 1150px) {
         .split3 { grid-template-columns: 300px 1fr; }
@@ -131,6 +141,7 @@
         header { padding: 12px 16px; }
         main { padding: 0 12px 40px; margin: 16px auto; }
         .card { padding: 18px; }
+        .split3 .panel-shared, .split3 .panel-mine { max-height: 480px; }
         .stat-grid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
     }
     .split .card, .split3 .card { margin-bottom: 0; }
@@ -192,6 +203,21 @@
         font-size: 14px;
         margin-top: 6px;
         background: #fbfcfe;
+    }
+    .field select {
+        width: 100%;
+        max-width: 100%;
+        padding: 10px 12px;
+        border: 1.5px solid var(--border);
+        border-radius: 8px;
+        font-size: 14px;
+        margin-top: 6px;
+        background: #fbfcfe;
+    }
+    .field select:focus {
+        outline: none;
+        border-color: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
     }
     input[type=file]:focus, input[type=text]:focus, input[type=password]:focus {
         outline: none;
@@ -322,7 +348,6 @@
     .bar .seg-success { background: var(--green); }
     .bar .seg-failed { background: var(--red); }
     .bar .seg-reversal { background: var(--primary); }
-    .bar .seg-timeout { background: var(--yellow); }
     .legend { font-size: 12px; margin-top: 8px; color: var(--muted); }
     .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
 
@@ -368,6 +393,14 @@
         box-shadow: 0 20px 60px rgba(16,24,40,0.35);
     }
     .modal-box h3 { margin: 0 0 4px; color: var(--primary-dark); font-size: 19px; }
+    .modal-head-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-right: 26px;
+    }
     .modal-close {
         float: right;
         background: none;
@@ -407,7 +440,30 @@
         font-weight: 700;
     }
 
+    /* bank statement type radio toggle */
+    .bank-type-toggle {
+        display: flex;
+        gap: 10px;
+        margin-top: 6px;
+        flex-wrap: wrap;
+    }
+    .bank-type-option {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 500;
+        font-size: 13.5px;
+        color: var(--text);
+        background: #fbfcfe;
+        border: 1.5px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 14px;
+        cursor: pointer;
+    }
+    .bank-type-option input { width: auto; margin: 0; }
+
     /* dashboard header / year filter / section grouping */
+    .dash-topbar { margin-bottom: 20px; }
     .dash-header-top {
         display: flex;
         justify-content: space-between;
@@ -536,30 +592,37 @@
     }
     @media (max-width: 860px) {
         .split[style*="1fr 1fr"] { grid-template-columns: 1fr !important; }
-    }
 
-    /* mobile responsiveness */
-    @media (max-width: 640px) {
-        header { padding: 10px 14px; gap: 8px 12px; }
-        header .brand img { height: 30px; }
+        /* collapse the nav into a hamburger dropdown well before things
+           get cramped, rather than letting it wrap messily first */
         .nav-toggle { display: block; }
         header nav {
             display: none;
             width: 100%;
             flex-direction: column;
             align-items: stretch;
-            gap: 10px;
-            background: rgba(9, 22, 64, 0.35);
-            padding: 14px 4px 4px;
-            margin-top: 4px;
-            border-top: 1px solid rgba(255,255,255,0.18);
+            gap: 4px;
+            background: rgba(15, 23, 55, 0.62);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
+            padding: 12px 10px;
+            margin-top: 6px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.16);
         }
         header nav.nav-open { display: flex; }
-        header nav a { font-size: 14px; padding: 6px 4px; }
+        header nav a { font-size: 14.5px; padding: 9px 8px; border-radius: 6px; }
+        header nav a:hover, header nav a.active { background: rgba(255,255,255,0.1); }
         header nav .nav-divider { display: none; }
-        header nav .user-badge { justify-content: flex-start; }
-        header nav form { width: 100%; }
+        header nav .user-badge { justify-content: flex-start; padding: 4px 8px; }
+        header nav form { width: 100%; margin-top: 4px; }
         header nav form .btn-sm { width: 100%; text-align: center; }
+    }
+
+    /* mobile responsiveness */
+    @media (max-width: 640px) {
+        header { padding: 10px 14px; gap: 8px 12px; }
+        header .brand img { height: 30px; }
         main { padding: 0 10px 32px; margin: 12px auto; }
         .card { padding: 14px; border-radius: 10px; }
         .card h2 { font-size: 15.5px; }
@@ -582,4 +645,83 @@
         .card-header-row { flex-direction: column; align-items: stretch; }
         .card-header-row .btn { text-align: center; }
         .activity-box-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    /* --- dashboard: left sidebar menu + scrollable right panel --- */
+    .dash-layout {
+        display: grid;
+        grid-template-columns: 240px 1fr;
+        gap: 20px;
+        align-items: start;
+    }
+    .dash-sidebar {
+        position: sticky;
+        top: 84px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px 14px;
+        box-shadow: 0 1px 3px rgba(16, 24, 40, 0.04);
+    }
+    .dash-sidebar-title {
+        font-size: 11.5px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted);
+        padding: 0 10px 10px;
+    }
+    .dash-menu { display: flex; flex-direction: column; gap: 4px; }
+    .dash-menu-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        text-align: left;
+        background: none;
+        border: none;
+        border-radius: 9px;
+        padding: 11px 12px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+    }
+    .dash-menu-icon { font-size: 16px; line-height: 1; }
+    .dash-menu-item:hover { background: var(--accent-soft); }
+    .dash-menu-item.active {
+        background: linear-gradient(120deg, var(--primary-dark), var(--primary));
+        color: #fff;
+        box-shadow: 0 3px 10px rgba(29, 78, 216, 0.25);
+    }
+    .dash-sidebar-hint {
+        font-size: 12px;
+        line-height: 1.5;
+        padding: 12px 10px 2px;
+        border-top: 1px solid var(--border);
+        margin-top: 10px;
+    }
+    .dash-content { min-width: 0; }
+    .dash-panel {
+        max-height: calc(100vh - 150px);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding-right: 4px;
+        animation: dash-panel-in 0.18s ease;
+    }
+    @keyframes dash-panel-in {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 980px) {
+        .dash-layout { grid-template-columns: 1fr; }
+        .dash-sidebar {
+            position: static;
+            padding: 10px;
+        }
+        .dash-menu { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+        .dash-menu-item { width: auto; padding: 9px 14px; }
+        .dash-sidebar-title, .dash-sidebar-hint { display: none; }
+        .dash-panel { max-height: none; overflow: visible; }
     }

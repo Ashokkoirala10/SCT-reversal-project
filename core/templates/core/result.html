@@ -44,9 +44,12 @@
         <div class="stat"><div class="num">{{ log.reversal_system_count }}</div><div class="label">System reversals (auto, not in file)</div></div>
         <div class="stat"><div class="num">Rs. {{ log.reversal_system_amount|floatformat:2 }}</div><div class="label">System reversal amount</div></div>
         <div class="stat"><div class="num">Rs. {{ log.reversal_system_charge|floatformat:2 }}</div><div class="label">System reversal charge</div></div>
+        <div class="stat"><div class="num">{{ log.reversal_system_onus_count }}</div><div class="label">...of which On-Us/NCHL (own sheet)</div></div>
+        <div class="stat"><div class="num">Rs. {{ log.reversal_system_onus_amount|floatformat:2 }}</div><div class="label">On-Us/NCHL system reversal amount</div></div>
         <div class="stat"><div class="num">{{ log.coop_count }}</div><div class="label">coop rows ({{ log.coop_member_count }} members)</div></div>
         <div class="stat"><div class="num">{{ log.imeremit_count }}</div><div class="label">imeremit rows</div></div>
         <div class="stat"><div class="num">{{ log.cityremit_count }}</div><div class="label">cityremit rows</div></div>
+        <div class="stat"><div class="num">{{ log.prabhu_reversal_count }}</div><div class="label">prabhu rows (own sheet)</div></div>
         <div class="stat"><div class="num">{{ log.timeout_count }}</div><div class="label">timeout rows</div></div>
         <div class="stat"><div class="num">{{ log.prabhu_rerouted }}</div><div class="label">Prabhu Bank rows (special debit account)</div></div>
         <div class="stat"><div class="num">{{ log.duplicate_skipped }}</div><div class="label">Skipped — already reversed last time</div></div>
@@ -56,7 +59,8 @@
 
     {% if log.bank_statement_checked %}
         <div class="info-box">
-            &#10003; Checked against bank statement <strong>{{ log.bank_statement_filename }}</strong>
+            &#10003; Checked against {% if log.bank_statement_type %}<strong>{{ log.get_bank_statement_type_display }}</strong>{% endif %}
+            bank statement <strong>{{ log.bank_statement_filename }}</strong>
             by {{ log.bank_statement_checked_by }} on {{ log.bank_statement_checked_at|date:"Y-m-d H:i" }}.
         </div>
         <div class="stat-grid">
@@ -64,6 +68,9 @@
             <div class="stat"><div class="num">Rs. {{ log.failed_credited_amount|floatformat:2 }}</div><div class="label">Failed but credited amount</div></div>
             <div class="stat"><div class="num">{{ log.already_reversed_count }}</div><div class="label">Manual reversal — already reversed (red-flagged)</div></div>
             <div class="stat"><div class="num">Rs. {{ log.already_reversed_amount|floatformat:2 }}</div><div class="label">Already-reversed amount</div></div>
+            <div class="stat"><div class="num">{{ log.already_reversed_nchl_count }}</div><div class="label">...of which NCHL already-debited (ref-id CR+DR check)</div></div>
+            <div class="stat"><div class="num">{{ log.already_reversed_onus_success_count }}</div><div class="label">...of which On-Us (Prabhu/Global) already successful (duplicate DR check)</div></div>
+            <div class="stat"><div class="num">{{ log.onus_system_reversal_flagged_count }}</div><div class="label">On-Us/NCHL system reversal — already successful before it was issued (red-flagged)</div></div>
         </div>
     {% elif log.status == "SUCCESS" and log.generated_file %}
         <button type="button" class="btn btn-secondary" onclick="openStatementModal()">Check against bank statement</button>
@@ -91,8 +98,13 @@
             {% csrf_token %}
             <input type="hidden" name="target_log" value="{{ log.id }}">
             <div class="field">
-                <label for="statement-modal-file">Bank statement (.csv or .xlsx)</label>
-                <input type="file" name="statement_file" id="statement-modal-file" accept=".csv,.xlsx" required>
+                <label for="statement-modal-global">Global IME Bank statement (.csv or .xlsx)</label>
+                <input type="file" name="global_statement_files" id="statement-modal-global" accept=".csv,.xlsx" multiple>
+            </div>
+            <div class="field">
+                <label for="statement-modal-prabhu">Prabhu Bank statement(s) (.csv or .xlsx)</label>
+                <input type="file" name="prabhu_statement_files" id="statement-modal-prabhu" accept=".csv,.xlsx" multiple>
+                <p class="muted" style="font-size:12px; margin:6px 0 0;">Up to 3 files. You can fill in either box, or both.</p>
             </div>
             <button type="submit" class="btn" id="statement-modal-submit" style="width:100%;">Check statement</button>
         </form>

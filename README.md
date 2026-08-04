@@ -37,6 +37,19 @@ impossible going forward. If it ever happens again, please save the exact
 source value + what showed up in the generated file, so the real cause can
 be confirmed and fixed for good.
 
+## Bank statement upload (multiple files)
+
+The "Check against bank statement" page accepts one **Global IME Bank**
+statement and up to **3 Prabhu Bank** statement files (e.g. separate daily
+exports), combined into one file automatically before checking. The file
+inputs support the browser's native multi-select (ctrl/shift-click all the
+files in one dialog), **and** also let you open "Choose files" more than
+once — each pick is *added* to your selection (shown as removable chips)
+instead of replacing it, up to the 3-file Prabhu limit. This avoids the
+common trap where a plain multi-file `<input>` silently drops everything
+except the most recent pick if files are selected one at a time across
+separate dialog opens.
+
 ## Double-reversal prevention
 
 Before writing a new reversal file, the app looks at the **most recently
@@ -94,12 +107,38 @@ Anyone can unmark their own passed report; admins can mark/unmark anyone's.
   breakdown, and the usual double-reversal / Prabhu-reroute / unrecognized-
   bank checks. Charge follows the same business rule as the generated file
   itself — NCHL-routed transactions carry their charge inside the amount,
-  so their charge is treated as 0 everywhere charge is summed.
+  so their charge is treated as 0 everywhere charge is summed. Also
+  includes two **separate** reports: a **Member-wise report** (success /
+  failed / reversal count + amount rolled up per Member Name, across every
+  aggregator) and an **Aggregator-wise report** (same, rolled up per
+  Aggregator instead) — kept as two independent tables/tabs rather than one
+  mixed (Member, Aggregator) table, since they answer different questions.
 - "Manual reversal" vs. "system reversal": a `REVERSAL` row is a **manual**
   reversal if its Source Message says so (these are the ones written into
   the generated file); any other `REVERSAL` row is a **system** reversal
   (the switch already reversed it automatically) — not written to the
-  file, but still counted for reconciliation.
+  file, but still counted for reconciliation. **Exception:** a system
+  reversal that is either **On-Us** (Global-to-Global or Prabhu-to-Prabhu)
+  or **NCHL-routed** is written out to its own sheet in the generated file
+  (`Onus Checked-System Reversal`) instead of only being counted, so it
+  can still be reviewed.
+
+## On-Us verification (Prabhu + Global)
+
+"On-Us" means the Debtor Bank and Creditor Bank are the *same* one of our
+own two banks — **Global-to-Global or Prabhu-to-Prabhu** (previously this
+only covered Global-to-Global). On-Us rows get an extra "is this actually
+already successful?" check, matching how NCHL rows are verified:
+
+- On the **failed** sheet, an On-Us row whose Network Reference Id shows up
+  as a **duplicate DR** in the bank statement (both legs of the transfer
+  actually completed) is green-flagged and moved to "Already Success
+  (OnUs)" instead of being treated as needing a reversal.
+- On the **manual reversal sheets** (coop / imeremit / cityremit / prabhu),
+  the same duplicate-DR check now also runs — catching an On-Us row that
+  ended up there **by mistake** even though it was already successful —
+  and red-flags it as already-reversed so nobody reverses it a second
+  time. This mirrors the existing NCHL ref-id check on the same sheets.
 
 ## File naming
 

@@ -19,4 +19,6 @@ urlpatterns = [
     path("dashboard/export/failed/", views.export_failed_onoffus_view, name="export_failed_onoffus"),
     path("dashboard/export/summary/", views.export_dashboard_summary_view, name="export_dashboard_summary"),
     path("dashboard/export/days/", views.export_day_breakdown_view, name="export_day_breakdown"),
+    path("dashboard/export/member-report/", views.export_member_report_view, name="export_member_report"),
+    path("dashboard/export/aggregator-report/", views.export_aggregator_report_view, name="export_aggregator_report"),
 ]

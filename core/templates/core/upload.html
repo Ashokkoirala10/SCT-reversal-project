@@ -22,15 +22,14 @@
         </form>
         <p class="muted" style="font-size:12.5px; margin-top:16px; margin-bottom:0;">
             Uploaded as <strong>{{ user.username }}</strong> &middot; stored as
-            <code>ibft_txn_data_&lt;date&gt;.xlsx</code>, output as
-            <code>need_to_reversal_&lt;date&gt;.xlsx</code>. New files only check the last
-            <strong>passed</strong> report for duplicate reversals.
-        </p>
+            <code>ibft_txn_data_&lt;date&gt;.xlsx</code> & output as
+            <code>need_to_reversal_&lt;date&gt;.xlsx</code>
     </div>
 
     <div class="card panel-shared">
         <h2>Shared passed reports</h2>
 
+        <div class="scroll-body">
         <div class="table-scroll">
         <table>
             <thead>
@@ -65,6 +64,7 @@
             </tbody>
         </table>
         </div>
+        </div>
 
         <div class="pagination">
             {% if shared_page.has_previous %}
@@ -80,6 +80,7 @@
     <div class="card panel-mine">
         <h2>My activity</h2>
 
+        <div class="scroll-body">
         <div class="activity-list">
         {% for log in mine_page %}
             <div class="activity-box">
@@ -151,6 +152,7 @@
         {% empty %}
             <p class="muted">You haven't uploaded anything yet.</p>
         {% endfor %}
+        </div>
         </div>
 
         <div class="pagination">

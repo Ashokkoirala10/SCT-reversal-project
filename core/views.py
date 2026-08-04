@@ -1,5 +1,6 @@
 import io
 import time
+from datetime import datetime
 from pathlib import Path
 
 from django.conf import settings
@@ -20,12 +21,13 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from .forms import BankStatementUploadForm, UploadForm
-from .models import ProcessingLog, SeenNetworkReferenceId
+from .models import MemberAggregatorStat, ProcessingLog, SeenNetworkReferenceId
 from .services import (
     ProcessingError,
     apply_bank_statement_to_reversal_file,
     build_output_filename,
     build_uploaded_filename,
+    combine_bank_statement_files,
     extract_reversal_network_reference_ids,
     process_ibft_file,
 )
@@ -92,12 +94,18 @@ def upload_view(request):
                     previously_reversed_ids = set()
 
             # --- Overlapping-time-window dedup ---------------------------
-            # Every Network Reference Id ever processed out of any earlier
-            # upload (any status), so a row from a period that was already
-            # covered by yesterday's download doesn't get counted (or
-            # reversed) a second time today.
+            # Every Network Reference Id already processed out of an
+            # earlier upload that was reviewed and marked PASSED — not
+            # *any* earlier upload — so a row from a period already
+            # covered by yesterday's approved download doesn't get counted
+            # (or reversed) a second time today. Files that were generated
+            # but never marked passed (e.g. a bad run that got
+            # regenerated) must not block today's run from seeing those
+            # same rows again.
             seen_reference_ids = set(
-                SeenNetworkReferenceId.objects.values_list("ref_id", flat=True)
+                SeenNetworkReferenceId.objects.filter(source_log__passed=True).values_list(
+                    "ref_id", flat=True
+                )
             )
 
             t0 = time.perf_counter()
@@ -137,9 +145,32 @@ def upload_view(request):
             log.status = ProcessingLog.STATUS_SUCCESS
             log.processing_duration_ms = elapsed_ms
             kept_reference_ids = stats.kept_reference_ids
+            member_aggregator_breakdown = stats.member_aggregator_breakdown
             for key, value in stats.as_dict().items():
                 setattr(log, key, value)
             log.save()
+
+            # Persist the per (Member Name, Aggregator) breakdown captured
+            # during processing — powers the dashboard's Member &
+            # Aggregator report (success/failed/reversal count + amount).
+            if member_aggregator_breakdown:
+                magg_objs = []
+                for key, bucket in member_aggregator_breakdown.items():
+                    member_name, _, aggregator = key.partition("\x1f")
+                    magg_objs.append(
+                        MemberAggregatorStat(
+                            log=log,
+                            member_name=member_name,
+                            aggregator=aggregator,
+                            success_count=bucket["success_count"],
+                            success_amount=bucket["success_amount"],
+                            failed_count=bucket["failed_count"],
+                            failed_amount=bucket["failed_amount"],
+                            reversal_count=bucket["reversal_count"],
+                            reversal_amount=bucket["reversal_amount"],
+                        )
+                    )
+                MemberAggregatorStat.objects.bulk_create(magg_objs, batch_size=500)
 
             # Persist newly-seen Network Reference Ids for the next
             # upload's overlapping-window dedup check.
@@ -166,7 +197,8 @@ def bank_statement_upload_view(request):
         form = BankStatementUploadForm(request.POST, request.FILES, user=request.user)
         if form.is_valid():
             log = form.cleaned_data["target_log"]
-            statement = form.cleaned_data["statement_file"]
+            global_files = form.cleaned_data["global_statement_files"]
+            prabhu_files = form.cleaned_data["prabhu_statement_files"]
 
             if not can_toggle_passed(request.user, log):
                 messages.error(request, "You can only check your own generated files against a bank statement.")
@@ -174,13 +206,48 @@ def bank_statement_upload_view(request):
 
             tmp_dir = Path(settings.MEDIA_ROOT) / "bank_statements"
             tmp_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path = tmp_dir / f"{log.id}_{statement.name}"
-            with open(tmp_path, "wb") as fh:
-                for chunk in statement.chunks():
-                    fh.write(chunk)
+
+            if global_files and prabhu_files:
+                bank_type = ProcessingLog.BANK_TYPE_BOTH
+            elif prabhu_files:
+                bank_type = ProcessingLog.BANK_TYPE_PRABHU
+            else:
+                bank_type = ProcessingLog.BANK_TYPE_GLOBAL
+
+            saved_paths = []
+            saved_names = []
+            for prefix, statement in [("global", f) for f in global_files] + [("prabhu", f) for f in prabhu_files]:
+                tmp_path = tmp_dir / f"{log.id}_{prefix}_{statement.name}"
+                with open(tmp_path, "wb") as fh:
+                    for chunk in statement.chunks():
+                        fh.write(chunk)
+                saved_paths.append((prefix, tmp_path))
+                saved_names.append(statement.name)
+
+            # One file: used as-is. Multiple files (Global + up to 4 Prabhu
+            # exports, any combination) — dump them all into one combined
+            # file first (tagging each row with which bank it came from —
+            # see combine_bank_statement_files()) so the rest of the
+            # pipeline only ever deals with a single statement, checking
+            # DR/CR the same way either way, while still being able to
+            # restrict a Prabhu-debtor row to Prabhu statement lines only
+            # (and a Global-debtor row to Global statement lines only).
+            if len(saved_paths) > 1:
+                combined_path = tmp_dir / f"{log.id}_{bank_type}_combined.csv"
+                try:
+                    statement_path = combine_bank_statement_files(saved_paths, combined_path)
+                except ProcessingError as exc:
+                    messages.error(request, str(exc))
+                    return redirect("core:bank_statement_upload")
+            else:
+                statement_path = saved_paths[0][1]
 
             try:
-                bstats = apply_bank_statement_to_reversal_file(log.generated_file.path, tmp_path)
+                default_source = {
+                    ProcessingLog.BANK_TYPE_GLOBAL: "global",
+                    ProcessingLog.BANK_TYPE_PRABHU: "prabhu",
+                }.get(bank_type, "")
+                bstats = apply_bank_statement_to_reversal_file(log.generated_file.path, statement_path, default_source)
             except ProcessingError as exc:
                 messages.error(request, str(exc))
                 return redirect("core:bank_statement_upload")
@@ -189,7 +256,8 @@ def bank_statement_upload_view(request):
                 return redirect("core:bank_statement_upload")
 
             log.bank_statement_checked = True
-            log.bank_statement_filename = statement.name
+            log.bank_statement_filename = ", ".join(saved_names)
+            log.bank_statement_type = bank_type
             log.bank_statement_checked_by = request.user.username
             log.bank_statement_checked_at = timezone.now()
             for key, value in bstats.as_dict().items():
@@ -211,13 +279,53 @@ def bank_statement_upload_view(request):
                 current[reason] = max(0, current.get(reason, 0) - count)
                 log.failed_reason_breakdown_offus = current
 
+            # An On-Us row with a duplicate DR isn't "failed" at all any
+            # more — it's genuinely successful (both legs of the transfer
+            # completed). Pull it out of every failed bucket (total, on-us,
+            # and reason breakdown) and add it to success instead.
+            if bstats.onus_already_success_count:
+                log.failed_total = max(0, log.failed_total - bstats.onus_already_success_count)
+                log.failed_amount = max(0.0, log.failed_amount - bstats.onus_already_success_amount)
+                log.failed_onus_count = max(0, log.failed_onus_count - bstats.onus_already_success_count)
+                log.failed_onus_amount = max(0.0, log.failed_onus_amount - bstats.onus_already_success_amount)
+                log.success_count = log.success_count + bstats.onus_already_success_count
+                log.success_amount = log.success_amount + bstats.onus_already_success_amount
+                for reason, count in bstats.onus_already_success_reason.items():
+                    current = dict(log.failed_reason_breakdown_onus or {})
+                    current[reason] = max(0, current.get(reason, 0) - count)
+                    log.failed_reason_breakdown_onus = current
+                    current_all = dict(log.failed_reason_breakdown or {})
+                    current_all[reason] = max(0, current_all.get(reason, 0) - count)
+                    log.failed_reason_breakdown = current_all
+
             log.save()
 
+            bank_label = dict(ProcessingLog.BANK_TYPE_CHOICES).get(bank_type, bank_type)
+            nchl_note = (
+                f" (incl. {bstats.already_reversed_nchl_count} caught by the NCHL ref-id check)"
+                if bstats.already_reversed_nchl_count else ""
+            )
+            onus_manual_note = (
+                f" (incl. {bstats.already_reversed_onus_success_count} On-Us row(s) on the manual "
+                f"reversal sheets found already successful and red-flagged)"
+                if bstats.already_reversed_onus_success_count else ""
+            )
+            onus_success_note = (
+                f" {bstats.onus_already_success_count} On-Us row(s) found already successful (duplicate DR) "
+                f"and moved to success."
+                if bstats.onus_already_success_count else ""
+            )
+            onus_sys_rev_note = (
+                f" {bstats.onus_system_reversal_flagged_count} On-Us/NCHL system reversal row(s) found to have "
+                f"already succeeded before the reversal was issued and red-flagged for review."
+                if bstats.onus_system_reversal_flagged_count else ""
+            )
             messages.success(
                 request,
-                f"Checked against {statement.name}: "
+                f"Checked against {bank_label} statement ({', '.join(saved_names)}): "
                 f"{bstats.failed_credited_count} failed-but-credited row(s) and "
-                f"{bstats.already_reversed_count} already-reversed row(s) red-flagged.",
+                f"{bstats.already_reversed_count} already-reversed row(s) red-flagged{nchl_note}{onus_manual_note}."
+                f"{onus_success_note}{onus_sys_rev_note}",
             )
             return redirect(reverse("core:result", args=[log.id]))
     else:
@@ -378,6 +486,25 @@ _REASON_ORDER = [
 ]
 
 
+def _parse_date_range(request, prefix: str):
+    """Reads `{prefix}_from` / `{prefix}_to` (YYYY-MM-DD) GET params —
+    used by the Member-wise and Aggregator-wise report tabs so each can be
+    narrowed to a specific date range independently of the page-level
+    year/month filter. Returns (from_date, to_date), either possibly None."""
+    from datetime import datetime as _datetime
+
+    def _parse(raw):
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        try:
+            return _datetime.strptime(raw, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    return _parse(request.GET.get(f"{prefix}_from")), _parse(request.GET.get(f"{prefix}_to"))
+
+
 def _apply_year_month_filter(request):
     """Shared by the dashboard and every CSV export: filters passed
     ProcessingLogs down to the selected year/month (either/both/neither),
@@ -403,13 +530,23 @@ def _apply_year_month_filter(request):
     if selected_month:
         successful_logs = successful_logs.filter(created_at__month=selected_month)
 
+    # Day-of-month filter (dd) — combines with month/year above (either/
+    # both/neither) so the dashboard can be narrowed all the way down to a
+    # single calendar date (dd/mm/yyyy), not just a whole month or year.
+    selected_day_raw = (request.GET.get("day") or "").strip()
+    selected_day = int(selected_day_raw) if selected_day_raw.isdigit() and 1 <= int(selected_day_raw) <= 31 else None
+    if selected_day:
+        successful_logs = successful_logs.filter(created_at__day=selected_day)
+
     return {
         "logs": successful_logs,
         "available_years": available_years,
         "selected_year": selected_year,
         "selected_month": selected_month,
         "selected_month_name": selected_month_name,
+        "selected_day": selected_day,
         "month_names": _MONTH_NAMES,
+        "day_numbers": list(range(1, 32)),
     }
 
 
@@ -523,7 +660,9 @@ def dashboard_view(request):
     selected_year = year_month["selected_year"]
     selected_month = year_month["selected_month"]
     selected_month_name = year_month["selected_month_name"]
+    selected_day = year_month["selected_day"]
     month_names = year_month["month_names"]
+    day_numbers = year_month["day_numbers"]
 
     totals = _compute_totals(successful_logs)
 
@@ -654,6 +793,7 @@ def dashboard_view(request):
         dup_source_skipped = row["duplicate_source_skipped"] or 0
         detail = {
             "day": day.strftime("%A, %d %b %Y"),
+            "day_iso": day.isoformat(),
             "files": row["files"],
             "total_rows": total_rows,
             "unique_new_txns": max(0, total_rows - dup_source_skipped),
@@ -720,7 +860,7 @@ def dashboard_view(request):
                 "data_through_at": detail["data_through_at"],
                 "success_pct": round(100 * (row["success_count"] or 0) / generated_total) if generated_total else 0,
                 "failed_pct": round(100 * failed / generated_total) if generated_total else 0,
-                "reversal_pct": round(100 * reversal / generated_total) if generated_total else 0,
+                "reversal_pct": round(100 * total_reversal / generated_total) if generated_total else 0,
                 "timeout_pct": round(100 * timeout / generated_total) if generated_total else 0,
                 "top_reasons": top_reasons_pct,
                 "detail": detail,
@@ -740,6 +880,91 @@ def dashboard_view(request):
     daily_paginator = Paginator(daily_stats, PAGE_SIZE)
     daily_page = daily_paginator.get_page(request.GET.get("page"))
 
+    # --- Member-wise report ----------------------------------------------
+    # Success / failed / manual-reversal count + amount, rolled up per
+    # Member Name (across every aggregator) over every passed file matching
+    # the selected year/month filter, further narrowed by its own optional
+    # From/To date range. Optional free-text filter on member name. Kept as
+    # its own table (not mixed with the aggregator-wise report below) since
+    # the two answer different questions.
+    member_query = (request.GET.get("member_q") or "").strip()
+    member_from, member_to = _parse_date_range(request, "member")
+    member_qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
+    if member_from:
+        member_qs = member_qs.filter(log__created_at__date__gte=member_from)
+    if member_to:
+        member_qs = member_qs.filter(log__created_at__date__lte=member_to)
+    member_qs = (
+        member_qs.values("member_name")
+        .annotate(
+            success_count=Sum("success_count"),
+            success_amount=Sum("success_amount"),
+            failed_count=Sum("failed_count"),
+            failed_amount=Sum("failed_amount"),
+            reversal_count=Sum("reversal_count"),
+            reversal_amount=Sum("reversal_amount"),
+        )
+        .order_by("member_name")
+    )
+    if member_query:
+        member_qs = member_qs.filter(member_name__icontains=member_query)
+
+    member_stats = [
+        {
+            "member_name": row["member_name"] or "\u2014",
+            "success_count": row["success_count"] or 0,
+            "success_amount": round(row["success_amount"] or 0, 2),
+            "failed_count": row["failed_count"] or 0,
+            "failed_amount": round(row["failed_amount"] or 0, 2),
+            "reversal_count": row["reversal_count"] or 0,
+            "reversal_amount": round(row["reversal_amount"] or 0, 2),
+        }
+        for row in member_qs
+    ]
+    member_paginator = Paginator(member_stats, PAGE_SIZE)
+    member_page = member_paginator.get_page(request.GET.get("member_page"))
+
+    # --- Aggregator-wise report -------------------------------------------
+    # Same breakdown, rolled up per Aggregator (across every member)
+    # instead, with its own independent From/To date range. Optional
+    # free-text filter on aggregator name.
+    aggregator_query = (request.GET.get("aggregator_q") or "").strip()
+    aggregator_from, aggregator_to = _parse_date_range(request, "aggregator")
+    aggregator_qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
+    if aggregator_from:
+        aggregator_qs = aggregator_qs.filter(log__created_at__date__gte=aggregator_from)
+    if aggregator_to:
+        aggregator_qs = aggregator_qs.filter(log__created_at__date__lte=aggregator_to)
+    aggregator_qs = (
+        aggregator_qs.values("aggregator")
+        .annotate(
+            success_count=Sum("success_count"),
+            success_amount=Sum("success_amount"),
+            failed_count=Sum("failed_count"),
+            failed_amount=Sum("failed_amount"),
+            reversal_count=Sum("reversal_count"),
+            reversal_amount=Sum("reversal_amount"),
+        )
+        .order_by("aggregator")
+    )
+    if aggregator_query:
+        aggregator_qs = aggregator_qs.filter(aggregator__icontains=aggregator_query)
+
+    aggregator_stats = [
+        {
+            "aggregator": row["aggregator"] or "\u2014",
+            "success_count": row["success_count"] or 0,
+            "success_amount": round(row["success_amount"] or 0, 2),
+            "failed_count": row["failed_count"] or 0,
+            "failed_amount": round(row["failed_amount"] or 0, 2),
+            "reversal_count": row["reversal_count"] or 0,
+            "reversal_amount": round(row["reversal_amount"] or 0, 2),
+        }
+        for row in aggregator_qs
+    ]
+    aggregator_paginator = Paginator(aggregator_stats, PAGE_SIZE)
+    aggregator_page = aggregator_paginator.get_page(request.GET.get("aggregator_page"))
+
     return render(
         request,
         "core/dashboard.html",
@@ -754,6 +979,16 @@ def dashboard_view(request):
             "month_names": month_names,
             "selected_month": selected_month,
             "selected_month_name": selected_month_name,
+            "selected_day": selected_day,
+            "day_numbers": day_numbers,
+            "member_page": member_page,
+            "member_query": member_query,
+            "member_from": member_from.isoformat() if member_from else "",
+            "member_to": member_to.isoformat() if member_to else "",
+            "aggregator_page": aggregator_page,
+            "aggregator_query": aggregator_query,
+            "aggregator_from": aggregator_from.isoformat() if aggregator_from else "",
+            "aggregator_to": aggregator_to.isoformat() if aggregator_to else "",
         },
     )
 
@@ -825,24 +1060,32 @@ def _finalize_xlsx(wb, filename: str) -> HttpResponse:
     return response
 
 
-def _period_suffix(selected_year, selected_month_name) -> str:
+def _period_suffix(selected_year, selected_month_name, selected_day=None) -> str:
     if selected_month_name and selected_year:
-        return f"{selected_month_name}_{selected_year}"
-    if selected_year:
-        return str(selected_year)
-    if selected_month_name:
-        return selected_month_name
-    return "all_time"
+        base = f"{selected_month_name}_{selected_year}"
+    elif selected_year:
+        base = str(selected_year)
+    elif selected_month_name:
+        base = selected_month_name
+    else:
+        base = "all_time"
+    if selected_day:
+        return f"{base}_{selected_day:02d}" if base != "all_time" else f"day_{selected_day:02d}"
+    return base
 
 
-def _period_label(selected_year, selected_month_name) -> str:
+def _period_label(selected_year, selected_month_name, selected_day=None) -> str:
     if selected_month_name and selected_year:
-        return f"{selected_month_name} {selected_year}"
-    if selected_year:
-        return str(selected_year)
-    if selected_month_name:
-        return f"{selected_month_name} (all years)"
-    return "All time"
+        base = f"{selected_month_name} {selected_year}"
+    elif selected_year:
+        base = str(selected_year)
+    elif selected_month_name:
+        base = f"{selected_month_name} (all years)"
+    else:
+        base = "All time"
+    if selected_day:
+        return f"{base}, day {selected_day}" if base not in ("All time",) else f"Day {selected_day} of every month"
+    return base
 
 
 
@@ -854,8 +1097,8 @@ def export_failed_onoffus_view(request):
     successful_logs = year_month["logs"]
     totals = _compute_totals(successful_logs)
     onus_offus = _compute_onus_offus(successful_logs, totals)
-    period = _period_label(year_month["selected_year"], year_month["selected_month_name"])
-    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"])
+    period = _period_label(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
 
     wb, ws_onus = _new_sheet("On-Us")
     ws_offus = wb.create_sheet("Off-Us")
@@ -885,8 +1128,8 @@ def export_dashboard_summary_view(request):
     successful_logs = year_month["logs"]
     totals = _compute_totals(successful_logs)
     onus_offus = _compute_onus_offus(successful_logs, totals)
-    period = _period_label(year_month["selected_year"], year_month["selected_month_name"])
-    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"])
+    period = _period_label(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
 
     monthly_qs = (
         successful_logs.annotate(month=TruncMonth("created_at"))
@@ -941,7 +1184,7 @@ def export_dashboard_summary_view(request):
     row += 1
 
     row = _write_section(ws, row, "Data quality")
-    row = _write_kv(ws, row, "Prabhu Bank rerouted", totals["prabhu_rerouted"])
+    row = _write_kv(ws, row, "Prabhu Bank reversal", totals["prabhu_rerouted"])
     row = _write_kv(ws, row, "Double-reversals prevented", totals["duplicate_skipped"])
     row = _write_kv(ws, row, "Overlapping-window duplicates skipped", totals["duplicate_source_skipped"])
     row = _write_kv(ws, row, "Unrecognized Debtor Bank rows", totals["unrecognized_debtor_bank_rows"])
@@ -986,13 +1229,160 @@ def export_dashboard_summary_view(request):
 
 
 @login_required
-def export_day_breakdown_view(request):
-    """Every day in the current filter (not just the paginated page shown
-    on-screen), with the same red-flag-corrected numbers as the dashboard."""
+def export_member_report_view(request):
+    """Member-wise report (success/failed/reversal count + amount per
+    Member Name) as a downloadable .xlsx — honors the page-level year/month
+    filter plus this report's own From/To date range and member search."""
     year_month = _apply_year_month_filter(request)
     successful_logs = year_month["logs"]
-    period = _period_label(year_month["selected_year"], year_month["selected_month_name"])
-    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"])
+    period = _period_label(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+
+    member_query = (request.GET.get("member_q") or "").strip()
+    member_from, member_to = _parse_date_range(request, "member")
+
+    qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
+    if member_from:
+        qs = qs.filter(log__created_at__date__gte=member_from)
+    if member_to:
+        qs = qs.filter(log__created_at__date__lte=member_to)
+    qs = (
+        qs.values("member_name")
+        .annotate(
+            success_count=Sum("success_count"),
+            success_amount=Sum("success_amount"),
+            failed_count=Sum("failed_count"),
+            failed_amount=Sum("failed_amount"),
+            reversal_count=Sum("reversal_count"),
+            reversal_amount=Sum("reversal_amount"),
+        )
+        .order_by("member_name")
+    )
+    if member_query:
+        qs = qs.filter(member_name__icontains=member_query)
+
+    date_note = f"{member_from or 'earliest'} to {member_to or 'latest'}" if (member_from or member_to) else None
+
+    wb, ws = _new_sheet("Member report")
+    title_period = f"{period} ({date_note})" if date_note else period
+    row = _write_title(ws, "Member-wise report", title_period)
+    if member_query:
+        row = _write_kv(ws, row, "Filtered to member matching", member_query)
+        row += 1
+    headers = [
+        "Member", "Success", "Success amount (Rs.)", "Failed", "Failed amount (Rs.)",
+        "Reversal", "Reversal amount (Rs.)",
+    ]
+    header_row = _write_table_header(ws, row, headers)
+    r = header_row - 1
+    for mrow in qs:
+        r += 1
+        values = [
+            mrow["member_name"] or "\u2014",
+            mrow["success_count"] or 0,
+            round(mrow["success_amount"] or 0, 2),
+            mrow["failed_count"] or 0,
+            round(mrow["failed_amount"] or 0, 2),
+            mrow["reversal_count"] or 0,
+            round(mrow["reversal_amount"] or 0, 2),
+        ]
+        for i, v in enumerate(values, start=1):
+            ws.cell(row=r, column=i, value=v)
+    _style_data_rows(ws, header_row, len(headers))
+    _autosize(ws)
+
+    return _finalize_xlsx(wb, f"member_report_{suffix}.xlsx")
+
+
+@login_required
+def export_aggregator_report_view(request):
+    """Aggregator-wise report (success/failed/reversal count + amount per
+    Aggregator) as a downloadable .xlsx — honors the page-level year/month
+    filter plus this report's own From/To date range and aggregator search."""
+    year_month = _apply_year_month_filter(request)
+    successful_logs = year_month["logs"]
+    period = _period_label(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+
+    aggregator_query = (request.GET.get("aggregator_q") or "").strip()
+    aggregator_from, aggregator_to = _parse_date_range(request, "aggregator")
+
+    qs = MemberAggregatorStat.objects.filter(log__in=successful_logs)
+    if aggregator_from:
+        qs = qs.filter(log__created_at__date__gte=aggregator_from)
+    if aggregator_to:
+        qs = qs.filter(log__created_at__date__lte=aggregator_to)
+    qs = (
+        qs.values("aggregator")
+        .annotate(
+            success_count=Sum("success_count"),
+            success_amount=Sum("success_amount"),
+            failed_count=Sum("failed_count"),
+            failed_amount=Sum("failed_amount"),
+            reversal_count=Sum("reversal_count"),
+            reversal_amount=Sum("reversal_amount"),
+        )
+        .order_by("aggregator")
+    )
+    if aggregator_query:
+        qs = qs.filter(aggregator__icontains=aggregator_query)
+
+    date_note = (
+        f"{aggregator_from or 'earliest'} to {aggregator_to or 'latest'}"
+        if (aggregator_from or aggregator_to) else None
+    )
+
+    wb, ws = _new_sheet("Aggregator report")
+    title_period = f"{period} ({date_note})" if date_note else period
+    row = _write_title(ws, "Aggregator-wise report", title_period)
+    if aggregator_query:
+        row = _write_kv(ws, row, "Filtered to aggregator matching", aggregator_query)
+        row += 1
+    headers = [
+        "Aggregator", "Success", "Success amount (Rs.)", "Failed", "Failed amount (Rs.)",
+        "Reversal", "Reversal amount (Rs.)",
+    ]
+    header_row = _write_table_header(ws, row, headers)
+    r = header_row - 1
+    for arow in qs:
+        r += 1
+        values = [
+            arow["aggregator"] or "\u2014",
+            arow["success_count"] or 0,
+            round(arow["success_amount"] or 0, 2),
+            arow["failed_count"] or 0,
+            round(arow["failed_amount"] or 0, 2),
+            arow["reversal_count"] or 0,
+            round(arow["reversal_amount"] or 0, 2),
+        ]
+        for i, v in enumerate(values, start=1):
+            ws.cell(row=r, column=i, value=v)
+    _style_data_rows(ws, header_row, len(headers))
+    _autosize(ws)
+
+    return _finalize_xlsx(wb, f"aggregator_report_{suffix}.xlsx")
+
+
+@login_required
+def export_day_breakdown_view(request):
+    """Every day in the current filter (not just the paginated page shown
+    on-screen), with the same red-flag-corrected numbers as the dashboard.
+    If ?day=YYYY-MM-DD is given (from the day modal's download button),
+    the workbook is narrowed down to just that one day."""
+    year_month = _apply_year_month_filter(request)
+    successful_logs = year_month["logs"]
+    period = _period_label(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+    suffix = _period_suffix(year_month["selected_year"], year_month["selected_month_name"], year_month.get("selected_day"))
+
+    single_day = (request.GET.get("day") or "").strip()
+    if single_day:
+        try:
+            datetime.strptime(single_day, "%Y-%m-%d")
+        except ValueError:
+            raise Http404("Invalid day")
+        successful_logs = successful_logs.filter(created_at__date=single_day)
+        period = single_day
+        suffix = single_day
 
     daily_qs = (
         successful_logs.annotate(day=TruncDate("created_at"))

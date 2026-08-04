@@ -65,6 +65,13 @@ class ProcessingLog(models.Model):
     reversal_system_count = models.IntegerField(default=0)
     reversal_system_amount = models.FloatField(default=0.0)
     reversal_system_charge = models.FloatField(default=0.0)
+    # Subset of reversal_system_* that is On-Us (Global-to-Global or
+    # Prabhu-to-Prabhu) or NCHL-routed — written to their own sheet
+    # (see ONUS_SYSTEM_REVERSAL_SHEET_NAME in core/services.py) instead of
+    # only being counted.
+    reversal_system_onus_count = models.IntegerField(default=0)
+    reversal_system_onus_amount = models.FloatField(default=0.0)
+    reversal_system_onus_charge = models.FloatField(default=0.0)
     coop_count = models.IntegerField(default=0)
     coop_member_count = models.IntegerField(default=0)
     imeremit_count = models.IntegerField(default=0)
@@ -112,9 +119,30 @@ class ProcessingLog(models.Model):
     failed_reason_breakdown_onus = models.JSONField(default=dict, blank=True)
     failed_reason_breakdown_offus = models.JSONField(default=dict, blank=True)
 
+    # Manual-reversal rows whose Debtor Bank is Prabhu Bank — these are
+    # written to their own dedicated "prabhu" sheet in the generated file
+    # instead of being lumped into coop/imeremit/cityremit, so Prabhu
+    # reversals can be worked (and bank-statement-checked) separately.
+    prabhu_reversal_count = models.IntegerField(default=0)
+    prabhu_reversal_amount = models.FloatField(default=0.0)
+
     # --- Bank statement cross-check (optional, applied after generation) ---
+    BANK_TYPE_GLOBAL = "global"
+    BANK_TYPE_PRABHU = "prabhu"
+    BANK_TYPE_BOTH = "both"
+    BANK_TYPE_CHOICES = [
+        (BANK_TYPE_GLOBAL, "Global IME Bank"),
+        (BANK_TYPE_PRABHU, "Prabhu Bank"),
+        (BANK_TYPE_BOTH, "Global IME Bank + Prabhu Bank"),
+    ]
     bank_statement_checked = models.BooleanField(default=False)
     bank_statement_filename = models.CharField(max_length=255, blank=True, default="")
+    # Which bank the most recent check's statement(s) were for. Prabhu
+    # statements may be up to 4 separate daily exports, dumped into one
+    # combined file before processing (see combine_bank_statement_files());
+    # bank_statement_filename then holds a comma-separated list of the
+    # original filenames.
+    bank_statement_type = models.CharField(max_length=10, choices=BANK_TYPE_CHOICES, blank=True, default="")
     bank_statement_checked_by = models.CharField(max_length=150, blank=True, default="")
     bank_statement_checked_at = models.DateTimeField(null=True, blank=True)
     # FAILED rows whose Network Reference Id showed up in the bank
@@ -129,6 +157,31 @@ class ProcessingLog(models.Model):
     already_reversed_count = models.IntegerField(default=0)
     already_reversed_amount = models.FloatField(default=0.0)
     already_reversed_charge = models.FloatField(default=0.0)
+    # Subset of the above caught specifically by the NCHL direct-reference-id
+    # (CR-alongside-DR) check — see is_already_debited_nchl() in services.py.
+    already_reversed_nchl_count = models.IntegerField(default=0)
+    already_reversed_nchl_amount = models.FloatField(default=0.0)
+    # Subset of already_reversed_* caught by the On-Us "already successful"
+    # (duplicate DR) verification on the manual-reversal sheets themselves
+    # — see has_duplicate_dr() in core/services.py. Catches an On-Us
+    # (Global-to-Global or Prabhu-to-Prabhu) row that landed in
+    # coop/imeremit/cityremit/prabhu by mistake even though it already
+    # completed successfully end-to-end.
+    already_reversed_onus_success_count = models.IntegerField(default=0)
+    already_reversed_onus_success_amount = models.FloatField(default=0.0)
+    # Rows on the On-Us/NCHL system reversal sheet found to have already
+    # succeeded BEFORE the system reversal was issued — see
+    # is_onus_already_success() in core/services.py.
+    onus_system_reversal_flagged_count = models.IntegerField(default=0)
+    onus_system_reversal_flagged_amount = models.FloatField(default=0.0)
+    # On-Us (Debtor Bank & Creditor Bank both our own Global IME Bank) FAILED
+    # rows found to have a duplicate DR in the statement — both legs of the
+    # transfer actually completed, so these are genuinely successful and do
+    # NOT need a manual reversal (see has_duplicate_dr() in services.py).
+    # Green-flagged on "failed" and copied into "Already Success (OnUs)".
+    onus_already_success_count = models.IntegerField(default=0)
+    onus_already_success_amount = models.FloatField(default=0.0)
+    onus_already_success_charge = models.FloatField(default=0.0)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -167,3 +220,101 @@ class SeenNetworkReferenceId(models.Model):
 
     def __str__(self):
         return self.ref_id
+
+
+class MemberAggregatorStat(models.Model):
+    """Per (Member Name, Aggregator) breakdown of Success / Failed / Manual
+    Reversal counts + amounts, for one processed upload.
+
+    Written once per upload (see process_ibft_file()'s
+    `member_aggregator_breakdown` on ProcessingStats), and rolled up across
+    every passed file for the Member & Aggregator report on the dashboard.
+    """
+
+    log = models.ForeignKey(ProcessingLog, on_delete=models.CASCADE, related_name="member_aggregator_stats")
+    member_name = models.CharField(max_length=255, blank=True, default="")
+    aggregator = models.CharField(max_length=255, blank=True, default="")
+
+    success_count = models.IntegerField(default=0)
+    success_amount = models.FloatField(default=0.0)
+    failed_count = models.IntegerField(default=0)
+    failed_amount = models.FloatField(default=0.0)
+    reversal_count = models.IntegerField(default=0)
+    reversal_amount = models.FloatField(default=0.0)
+
+    class Meta:
+        indexes = [models.Index(fields=["member_name", "aggregator"])]
+
+    def __str__(self):
+        return f"{self.member_name} / {self.aggregator} (log {self.log_id})"
+
+
+class BankAccount(models.Model):
+    """Configurable Debtor-Bank -> Debit-Account mapping, editable from the
+    Django admin (Admin > Core > Bank accounts).
+
+    Global IME Bank and Prabhu Bank ship as the two default rows (seeded by
+    migration 0014), matching what used to be hardcoded constants in
+    core/services.py: editing a row's Debit Account Number here changes
+    which account is placed in a reversal row's "Debit Account Number"
+    column for any transaction whose Debtor Bank matches this row's
+    Keyword — no code change or deploy needed. Add a brand-new row the same
+    way to support a bank that isn't Global IME or Prabhu at all; tick
+    "Is own bank" if it should also count toward On-Us determination
+    (both Debtor Bank and Creditor Bank being one of our own banks).
+    """
+
+    bank_name = models.CharField(
+        max_length=100,
+        help_text="Display name, e.g. 'Global IME Bank'.",
+    )
+    keyword = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text=(
+            "Upper-cased, case-insensitive substring matched against the "
+            "'Debtor Bank' (and 'Creditor Bank') column, e.g. 'GLOBAL' "
+            "matches 'Global IME Bank'. Keep this short and specific."
+        ),
+    )
+    debit_account_number = models.CharField(
+        max_length=50,
+        help_text="Placed in 'Debit Account Number' for any reversal row whose Debtor Bank matches this Keyword.",
+    )
+    is_own_bank = models.BooleanField(
+        default=False,
+        help_text=(
+            "Check for Global IME Bank / Prabhu Bank and any other bank we "
+            "operate — this bank then counts toward On-Us determination "
+            "(Debtor Bank and Creditor Bank both being one of our own "
+            "banks), which drives the On-Us \"already successful\" checks."
+        ),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Untick to stop matching this bank without deleting the row.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["bank_name"]
+
+    def __str__(self):
+        return f"{self.bank_name} ({self.keyword})"
+
+    def save(self, *args, **kwargs):
+        self.keyword = (self.keyword or "").strip().upper()
+        super().save(*args, **kwargs)
+
+
+def _clear_bank_account_cache(**kwargs):
+    # Lazy import: services.py has no top-level dependency on models.py, and
+    # this keeps it that way — only reached once Django has fully loaded.
+    from . import services
+
+    services.bank_accounts_cache_clear()
+
+
+models.signals.post_save.connect(_clear_bank_account_cache, sender=BankAccount)
+models.signals.post_delete.connect(_clear_bank_account_cache, sender=BankAccount)
