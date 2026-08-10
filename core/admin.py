@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BankAccount, MemberAggregatorStat, ProcessingLog
+from .models import BankAccount, ProcessingLog
 
 
 @admin.register(BankAccount)
@@ -35,13 +35,9 @@ class ProcessingLogAdmin(admin.ModelAdmin):
     search_fields = ("uploaded_filename", "generated_filename", "uploaded_by")
     readonly_fields = [f.name for f in ProcessingLog._meta.fields]
 
-
-@admin.register(MemberAggregatorStat)
-class MemberAggregatorStatAdmin(admin.ModelAdmin):
-    list_display = (
-        "id", "log", "member_name", "aggregator",
-        "success_count", "failed_count", "reversal_count",
-    )
-    list_filter = ("aggregator",)
-    search_fields = ("member_name", "aggregator")
-    readonly_fields = [f.name for f in MemberAggregatorStat._meta.fields]
+# MemberAggregatorStat is intentionally NOT registered here — it's a
+# per-upload, per-(member, aggregator) row (hundreds/thousands of rows per
+# file) that isn't meaningful to browse/manage one-by-one in Django admin.
+# It's already fully exposed, rolled up and filterable, on the dashboard's
+# Member-wise / Aggregator-wise report tabs (see core/views.py) and via
+# their Excel exports, so a Django admin listing for it is unnecessary.

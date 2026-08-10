@@ -50,6 +50,17 @@ PRABHU_BANK_KEYWORD = "PRABHU"
 # reversal, regardless of what the original file shows.
 ZERO_CHARGE_NETWORK_KEYWORDS = ("NCHL",)
 
+# The Khalti aggregator settles the same way NCHL does (its own CR/DR legs
+# for one payment don't share a Network Reference Id or ISO id the normal
+# way — see is_already_debited_khalti() below), so it's recognized by this
+# keyword against the "Aggregator" (and, as a fallback, "Payment
+# Processor") column, and by this literal marker that shows up in the
+# bank statement's REMARKS for a Khalti settlement DR entry, e.g.:
+#   DR  SCT/KHALTI_SETTL/00000000P09X/100220/00000000P0A2/S66930950
+#   CR  SCT/00000000P09X/9972886358965443/11012000/SUJAN KHANAL/S66930010
+KHALTI_AGGREGATOR_KEYWORD = "KHALTI"
+KHALTI_STATEMENT_KEYWORD = "KHALTI_SETTL"
+
 SOURCE_SHEET_NAME_CANDIDATES = ["Transactions", "transactions"]
 
 # Column names expected in the source workbook (must match, case sensitive,
@@ -313,6 +324,14 @@ def is_zero_charge_network(payment_processor: Any) -> bool:
     """NCHL-routed transactions always carry a 0 charge on the reversal."""
     value = str(payment_processor or "").upper()
     return any(keyword in value for keyword in ZERO_CHARGE_NETWORK_KEYWORDS)
+
+
+def is_khalti_aggregator(aggregator: Any, payment_processor: Any = None) -> bool:
+    """True if this row is routed through the Khalti aggregator — checked
+    against "Aggregator" primarily, and "Payment Processor" too as a
+    fallback in case an export ever tags it there instead."""
+    combined = f"{aggregator or ''} {payment_processor or ''}".upper()
+    return KHALTI_AGGREGATOR_KEYWORD in combined
 
 
 def resolve_charge_amount(row, col) -> Any:
@@ -730,13 +749,14 @@ def process_ibft_file(
                 stats.reversal_system_amount += sys_amount
                 stats.reversal_system_charge += sys_charge
 
-                # On-Us (Global-to-Global or Prabhu-to-Prabhu) or NCHL-
-                # routed system reversals get verified/kept on their own
-                # sheet instead of only being counted, so they can be
-                # reviewed the same way manual reversals are.
+                # On-Us (Global-to-Global or Prabhu-to-Prabhu), NCHL-
+                # routed, or Khalti system reversals get verified/kept on
+                # their own sheet instead of only being counted, so they
+                # can be reviewed the same way manual reversals are.
                 is_onus = is_on_us(g(row, "Debtor Bank"), g(row, "Creditor Bank"))
                 is_nchl = is_zero_charge_network(g(row, "Payment Processor"))
-                if is_onus or is_nchl:
+                is_khalti = is_khalti_aggregator(g(row, "Aggregator"), g(row, "Payment Processor"))
+                if is_onus or is_nchl or is_khalti:
                     stats.reversal_system_onus_count += 1
                     stats.reversal_system_onus_amount += sys_amount
                     stats.reversal_system_onus_charge += sys_charge
@@ -1270,6 +1290,66 @@ def is_already_debited_nchl(index: BankStatementIndex, ref_id: Any, source: str 
     return False
 
 
+def is_already_debited_khalti(index: BankStatementIndex, ref_id: Any, source: str = "") -> bool:
+    """Khalti-specific "already handled" check — a sibling of
+    is_already_debited_nchl() above, for the same reason: Khalti's own
+    settlement DR leg doesn't carry the original CR's trailing ISO id (so
+    is_already_reversed() misses it), e.g.:
+
+        CR  SCT/00000000P09X/9972886358965443/11012000/SUJAN KHANAL/S66930010
+        DR  SCT/KHALTI_SETTL/00000000P09X/100220/00000000P0A2/S66930950
+
+    Unlike NCHL, Khalti's DR leg does NOT carry the beneficiary name
+    anywhere in its REMARKS — only the shared masked settlement account id
+    ("00000000P09X" above, standalone in the CR leg and embedded right
+    after the literal "KHALTI_SETTL/" marker in the DR leg). So this
+    matches on the settlement account id alone, gated by that
+    KHALTI_SETTL marker being present (instead of also requiring a name
+    match, which would never fire for Khalti) to still avoid a
+    false-positive match against an unrelated DR entry that happens to
+    reuse the same masked account digits.
+
+    Same reversal-of-reversal guard as is_already_debited_nchl(): if the
+    matched DR's own trailing ISO id shows up as a CR entry elsewhere in
+    the statement, Khalti reversed its own settlement debit back out, so
+    this isn't a terminal "already debited" state and the row must still
+    go through the normal manual reversal.
+    """
+    entries = statement_entries_for_reference(index, ref_id, source)
+    for entry in entries:
+        if (entry["entry_type"] or "").strip().upper() != "CR":
+            continue
+        remarks = entry["remarks"] or ""
+        account_match = _STATEMENT_ACCOUNT_TOKEN_RE.search(remarks.upper())
+        if not account_match:
+            continue
+        anchor_account = account_match.group(0)
+
+        for candidate in index.entries:
+            if candidate is entry:
+                continue
+            if (candidate["entry_type"] or "").strip().upper() != "DR":
+                continue
+            candidate_remarks = (candidate["remarks"] or "").upper()
+            if KHALTI_STATEMENT_KEYWORD not in candidate_remarks:
+                continue
+            if anchor_account not in candidate_remarks:
+                continue
+
+            candidate_iso_match = _STATEMENT_ISO_ID_RE.search((candidate["remarks"] or "").strip())
+            if candidate_iso_match:
+                candidate_iso = candidate_iso_match.group(1).strip().upper()
+                reversed_back = any(
+                    (row["entry_type"] or "").strip().upper() == "CR"
+                    for row in index.by_token.get(candidate_iso, [])
+                )
+                if reversed_back:
+                    continue
+
+            return True
+    return False
+
+
 @dataclass
 class BankStatementCheckStats:
     statement_rows: int = 0
@@ -1286,6 +1366,10 @@ class BankStatementCheckStats:
     # bug fix is actually catching rows.
     already_reversed_nchl_count: int = 0
     already_reversed_nchl_amount: float = 0.0
+    # Subset of already_reversed_* above caught specifically by the Khalti
+    # settlement-account (KHALTI_SETTL) check — see is_already_debited_khalti().
+    already_reversed_khalti_count: int = 0
+    already_reversed_khalti_amount: float = 0.0
     # Subset of already_reversed_* caught by the On-Us "already successful"
     # (duplicate DR) check — see has_duplicate_dr(). This catches an On-Us
     # (Global-to-Global or Prabhu-to-Prabhu) row that ended up in a manual
@@ -1331,6 +1415,8 @@ class BankStatementCheckStats:
             "already_reversed_charge": self.already_reversed_charge,
             "already_reversed_nchl_count": self.already_reversed_nchl_count,
             "already_reversed_nchl_amount": self.already_reversed_nchl_amount,
+            "already_reversed_khalti_count": self.already_reversed_khalti_count,
+            "already_reversed_khalti_amount": self.already_reversed_khalti_amount,
             "already_reversed_onus_success_count": self.already_reversed_onus_success_count,
             "already_reversed_onus_success_amount": self.already_reversed_onus_success_amount,
             "onus_system_reversal_flagged_count": self.onus_system_reversal_flagged_count,
@@ -1578,6 +1664,19 @@ def apply_bank_statement_to_reversal_file(
                     already = True
                     is_nchl_hit = True
 
+            is_khalti_hit = False
+            if not already and is_khalti_aggregator(
+                values[col["Aggregator"]] if "Aggregator" in col else None,
+                values[col["Payment Processor"]] if "Payment Processor" in col else None,
+            ):
+                # Khalti bug fix: same idea as the NCHL check above, but
+                # Khalti's DR leg carries the shared masked settlement
+                # account id behind the "KHALTI_SETTL/" marker instead of
+                # any shared ISO id — see is_already_debited_khalti().
+                if is_already_debited_khalti(index, ref_id, expected_source):
+                    already = True
+                    is_khalti_hit = True
+
             if not already:
                 continue
             _flag_row_red(ws, row_number)
@@ -1591,6 +1690,10 @@ def apply_bank_statement_to_reversal_file(
                 stats.already_reversed_nchl_count += 1
                 if "Transaction Amount" in col:
                     stats.already_reversed_nchl_amount += to_float(values[col["Transaction Amount"]])
+            if is_khalti_hit:
+                stats.already_reversed_khalti_count += 1
+                if "Transaction Amount" in col:
+                    stats.already_reversed_khalti_amount += to_float(values[col["Transaction Amount"]])
             if is_onus_success_hit:
                 stats.already_reversed_onus_success_count += 1
                 if "Transaction Amount" in col:
@@ -1626,6 +1729,11 @@ def apply_bank_statement_to_reversal_file(
                 )
                 if not already_success and "Payment Processor" in col and is_zero_charge_network(values[col["Payment Processor"]]):
                     already_success = is_already_debited_nchl(index, ref_id, expected_source)
+                if not already_success and is_khalti_aggregator(
+                    values[col["Aggregator"]] if "Aggregator" in col else None,
+                    values[col["Payment Processor"]] if "Payment Processor" in col else None,
+                ):
+                    already_success = is_already_debited_khalti(index, ref_id, expected_source)
 
                 if not already_success:
                     continue

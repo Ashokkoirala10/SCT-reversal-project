@@ -161,6 +161,11 @@ class ProcessingLog(models.Model):
     # (CR-alongside-DR) check — see is_already_debited_nchl() in services.py.
     already_reversed_nchl_count = models.IntegerField(default=0)
     already_reversed_nchl_amount = models.FloatField(default=0.0)
+    # Subset of the above caught specifically by the Khalti settlement-
+    # account (KHALTI_SETTL) check — see is_already_debited_khalti() in
+    # services.py.
+    already_reversed_khalti_count = models.IntegerField(default=0)
+    already_reversed_khalti_amount = models.FloatField(default=0.0)
     # Subset of already_reversed_* caught by the On-Us "already successful"
     # (duplicate DR) verification on the manual-reversal sheets themselves
     # — see has_duplicate_dr() in core/services.py. Catches an On-Us

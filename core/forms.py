@@ -1,6 +1,6 @@
 from django import forms
 
-from .models import ProcessingLog
+from .models import BankAccount, ProcessingLog
 
 
 class UploadForm(forms.Form):
@@ -112,3 +112,45 @@ class BankStatementUploadForm(forms.Form):
         cleaned["global_statement_files"] = global_files
         cleaned["prabhu_statement_files"] = prabhu_files
         return cleaned
+
+
+class BankAccountForm(forms.ModelForm):
+    """Lets an Admin (is_staff) user add a new Debtor-Bank -> Debit-Account
+    mapping from inside the app itself (Extra page), instead of only being
+    possible from Django admin (which remains available, unchanged, for
+    superusers — see BankAccountAdmin in core/admin.py). Editing/deleting
+    an existing row is still superuser-only, via Django admin."""
+
+    class Meta:
+        model = BankAccount
+        fields = ["bank_name", "keyword", "debit_account_number", "is_own_bank", "is_active"]
+        labels = {
+            "bank_name": "Bank name",
+            "keyword": "Keyword (matched against Debtor Bank)",
+            "debit_account_number": "Debit account number",
+            "is_own_bank": "Is own bank (counts toward On-Us)",
+            "is_active": "Active",
+        }
+        widgets = {
+            "bank_name": forms.TextInput(attrs={"placeholder": "e.g. NIC Asia Bank"}),
+            "keyword": forms.TextInput(attrs={"placeholder": "e.g. NICASIA"}),
+            "debit_account_number": forms.TextInput(attrs={"placeholder": "e.g. 0001234567890"}),
+        }
+
+    def clean_keyword(self):
+        keyword = (self.cleaned_data.get("keyword") or "").strip().upper()
+        if not keyword:
+            raise forms.ValidationError("Keyword is required.")
+        return keyword
+
+    def clean_bank_name(self):
+        name = (self.cleaned_data.get("bank_name") or "").strip()
+        if not name:
+            raise forms.ValidationError("Bank name is required.")
+        return name
+
+    def clean_debit_account_number(self):
+        account = (self.cleaned_data.get("debit_account_number") or "").strip()
+        if not account:
+            raise forms.ValidationError("Debit account number is required.")
+        return account

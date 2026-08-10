@@ -69,6 +69,7 @@
             <div class="stat"><div class="num">{{ log.already_reversed_count }}</div><div class="label">Manual reversal — already reversed (red-flagged)</div></div>
             <div class="stat"><div class="num">Rs. {{ log.already_reversed_amount|floatformat:2 }}</div><div class="label">Already-reversed amount</div></div>
             <div class="stat"><div class="num">{{ log.already_reversed_nchl_count }}</div><div class="label">...of which NCHL already-debited (ref-id CR+DR check)</div></div>
+            <div class="stat"><div class="num">{{ log.already_reversed_khalti_count }}</div><div class="label">...of which Khalti already-debited (KHALTI_SETTL check)</div></div>
             <div class="stat"><div class="num">{{ log.already_reversed_onus_success_count }}</div><div class="label">...of which On-Us (Prabhu/Global) already successful (duplicate DR check)</div></div>
             <div class="stat"><div class="num">{{ log.onus_system_reversal_flagged_count }}</div><div class="label">On-Us/NCHL system reversal — already successful before it was issued (red-flagged)</div></div>
         </div>

@@ -17,11 +17,11 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_POST
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from .forms import BankStatementUploadForm, UploadForm
-from .models import MemberAggregatorStat, ProcessingLog, SeenNetworkReferenceId
+from .forms import BankAccountForm, BankStatementUploadForm, UploadForm
+from .models import BankAccount, MemberAggregatorStat, ProcessingLog, SeenNetworkReferenceId
 from .services import (
     ProcessingError,
     apply_bank_statement_to_reversal_file,
@@ -305,6 +305,10 @@ def bank_statement_upload_view(request):
                 f" (incl. {bstats.already_reversed_nchl_count} caught by the NCHL ref-id check)"
                 if bstats.already_reversed_nchl_count else ""
             )
+            khalti_note = (
+                f" (incl. {bstats.already_reversed_khalti_count} caught by the Khalti settlement check)"
+                if bstats.already_reversed_khalti_count else ""
+            )
             onus_manual_note = (
                 f" (incl. {bstats.already_reversed_onus_success_count} On-Us row(s) on the manual "
                 f"reversal sheets found already successful and red-flagged)"
@@ -324,14 +328,47 @@ def bank_statement_upload_view(request):
                 request,
                 f"Checked against {bank_label} statement ({', '.join(saved_names)}): "
                 f"{bstats.failed_credited_count} failed-but-credited row(s) and "
-                f"{bstats.already_reversed_count} already-reversed row(s) red-flagged{nchl_note}{onus_manual_note}."
+                f"{bstats.already_reversed_count} already-reversed row(s) red-flagged{nchl_note}{khalti_note}{onus_manual_note}."
                 f"{onus_success_note}{onus_sys_rev_note}",
             )
             return redirect(reverse("core:result", args=[log.id]))
     else:
         form = BankStatementUploadForm(user=request.user)
 
-    return render(request, "core/bank_statement_upload.html", {"form": form})
+    context = {"form": form}
+    if is_admin(request.user):
+        # "Extra" page's second tab — add-bank-account feature for Admin
+        # (is_staff) users. Full CRUD on bank accounts (edit/delete) stays
+        # superuser-only via Django admin (see core/admin.py); this is
+        # just a quick "add a new one" form plus a read-only reference
+        # list of what's currently configured.
+        context["bank_form"] = BankAccountForm()
+        context["bank_accounts"] = BankAccount.objects.order_by("bank_name")
+    return render(request, "core/bank_statement_upload.html", context)
+
+
+@login_required
+@user_passes_test(is_admin, login_url="core:upload")
+@require_POST
+def add_bank_account_view(request):
+    """Add a new Debtor-Bank -> Debit-Account mapping (core.models.BankAccount)
+    from the "Extra" page's Add bank account tab. Restricted to Admin
+    (is_staff) users. Editing or deleting an existing row still requires
+    Django admin (superuser) — see core/admin.py's BankAccountAdmin, which
+    is left exactly as it was."""
+    form = BankAccountForm(request.POST)
+    if form.is_valid():
+        account = form.save()
+        messages.success(
+            request,
+            f"Bank account '{account.bank_name}' (keyword '{account.keyword}') added.",
+        )
+    else:
+        for field, errors in form.errors.items():
+            label = form.fields[field].label if field in form.fields else field
+            for err in errors:
+                messages.error(request, f"{label}: {err}")
+    return redirect("core:bank_statement_upload")
 
 
 def _panel_context(request):
@@ -650,77 +687,19 @@ def _compute_onus_offus(successful_logs, totals):
     }
 
 
-@login_required
-def dashboard_view(request):
-    # Only PASSED files count toward analytics — a generated file that
-    # hasn't been reviewed/marked passed yet doesn't skew the numbers.
-    year_month = _apply_year_month_filter(request)
-    successful_logs = year_month["logs"]
-    available_years = year_month["available_years"]
-    selected_year = year_month["selected_year"]
-    selected_month = year_month["selected_month"]
-    selected_month_name = year_month["selected_month_name"]
-    selected_day = year_month["selected_day"]
-    month_names = year_month["month_names"]
-    day_numbers = year_month["day_numbers"]
+def _build_daily_stats(successful_logs):
+    """Day-by-day breakdown, red-flag-corrected, with full success/failed/
+    manual-reversal/system-reversal/failed-credited/already-reversed/timeout
+    counts, amounts AND charges, plus top failure reasons, processing time
+    and "data through" — exactly what the dashboard's day cards and their
+    "click for full reconciliation" modal show (each item's "detail" key is
+    literally what's rendered there, via {{ d.detail|json_script:... }}).
 
-    totals = _compute_totals(successful_logs)
-
-    # --- Failed on-us / off-us breakdown, with reasons ---------------------
-    # On-Us = Debtor Bank is our own bank (Global IME Bank); Off-Us = any
-    # other bank. Reason labels come pre-bucketed (case-insensitively) into
-    # the fixed set: Timeout, Insufficient fund, Card issuer timeout,
-    # Response timeout, Transaction amount exceeded, Other.
-    onus_offus = _compute_onus_offus(successful_logs, totals)
-
-    # --- Monthly report ------------------------------------------------
-    monthly_qs = (
-        successful_logs.annotate(month=TruncMonth("created_at"))
-        .values("month")
-        .annotate(
-            files=Count("id"),
-            total_rows=Sum("total_rows"),
-            success_count=Sum("success_count"),
-            success_amount=Sum("success_amount"),
-            failed_total=Sum("failed_total"),
-            failed_amount=Sum("failed_amount"),
-            reversal_manual_kept=Sum("reversal_manual_kept"),
-            reversal_manual_amount=Sum("reversal_manual_amount"),
-            reversal_system_count=Sum("reversal_system_count"),
-            reversal_system_amount=Sum("reversal_system_amount"),
-            timeout_count=Sum("timeout_count"),
-            failed_credited_count=Sum("failed_credited_count"),
-            failed_credited_amount=Sum("failed_credited_amount"),
-            already_reversed_count=Sum("already_reversed_count"),
-            already_reversed_amount=Sum("already_reversed_amount"),
-        )
-        .order_by("-month")
-    )
-    monthly_stats = []
-    for row in monthly_qs:
-        failed_credited = row["failed_credited_count"] or 0
-        already_reversed = row["already_reversed_count"] or 0
-        failed = max(0, (row["failed_total"] or 0) - failed_credited)
-        reversal = max(0, (row["reversal_manual_kept"] or 0) - already_reversed)
-        system_reversal = (row["reversal_system_count"] or 0) + already_reversed
-        total_reversal = reversal + system_reversal + failed_credited
-        month_dt = row["month"]
-        monthly_stats.append(
-            {
-                "label": timezone.localtime(month_dt).strftime("%B %Y") if month_dt else "—",
-                "files": row["files"],
-                "total_rows": row["total_rows"] or 0,
-                "success_count": row["success_count"] or 0,
-                "success_amount": round(row["success_amount"] or 0, 2),
-                "failed_count": failed,
-                "failed_amount": round((row["failed_amount"] or 0) - (row["failed_credited_amount"] or 0), 2),
-                "manual_reversal_count": reversal,
-                "system_reversal_count": system_reversal,
-                "total_reversal": total_reversal,
-                "timeout_count": row["timeout_count"] or 0,
-            }
-        )
-
+    Shared by dashboard_view (on-screen, paginated) and
+    export_day_breakdown_view (the Excel download) so the two can never
+    drift apart — the download always matches the website, not a
+    simplified one-line-per-day summary.
+    """
     daily_qs = (
         successful_logs.annotate(day=TruncDate("created_at"))
         .values("day")
@@ -876,6 +855,81 @@ def dashboard_view(request):
         )
 
     chart_points.reverse()  # oldest first for the line graph
+    return daily_stats, chart_points
+
+
+@login_required
+def dashboard_view(request):
+    # Only PASSED files count toward analytics — a generated file that
+    # hasn't been reviewed/marked passed yet doesn't skew the numbers.
+    year_month = _apply_year_month_filter(request)
+    successful_logs = year_month["logs"]
+    available_years = year_month["available_years"]
+    selected_year = year_month["selected_year"]
+    selected_month = year_month["selected_month"]
+    selected_month_name = year_month["selected_month_name"]
+    selected_day = year_month["selected_day"]
+    month_names = year_month["month_names"]
+    day_numbers = year_month["day_numbers"]
+
+    totals = _compute_totals(successful_logs)
+
+    # --- Failed on-us / off-us breakdown, with reasons ---------------------
+    # On-Us = Debtor Bank is our own bank (Global IME Bank); Off-Us = any
+    # other bank. Reason labels come pre-bucketed (case-insensitively) into
+    # the fixed set: Timeout, Insufficient fund, Card issuer timeout,
+    # Response timeout, Transaction amount exceeded, Other.
+    onus_offus = _compute_onus_offus(successful_logs, totals)
+
+    # --- Monthly report ------------------------------------------------
+    monthly_qs = (
+        successful_logs.annotate(month=TruncMonth("created_at"))
+        .values("month")
+        .annotate(
+            files=Count("id"),
+            total_rows=Sum("total_rows"),
+            success_count=Sum("success_count"),
+            success_amount=Sum("success_amount"),
+            failed_total=Sum("failed_total"),
+            failed_amount=Sum("failed_amount"),
+            reversal_manual_kept=Sum("reversal_manual_kept"),
+            reversal_manual_amount=Sum("reversal_manual_amount"),
+            reversal_system_count=Sum("reversal_system_count"),
+            reversal_system_amount=Sum("reversal_system_amount"),
+            timeout_count=Sum("timeout_count"),
+            failed_credited_count=Sum("failed_credited_count"),
+            failed_credited_amount=Sum("failed_credited_amount"),
+            already_reversed_count=Sum("already_reversed_count"),
+            already_reversed_amount=Sum("already_reversed_amount"),
+        )
+        .order_by("-month")
+    )
+    monthly_stats = []
+    for row in monthly_qs:
+        failed_credited = row["failed_credited_count"] or 0
+        already_reversed = row["already_reversed_count"] or 0
+        failed = max(0, (row["failed_total"] or 0) - failed_credited)
+        reversal = max(0, (row["reversal_manual_kept"] or 0) - already_reversed)
+        system_reversal = (row["reversal_system_count"] or 0) + already_reversed
+        total_reversal = reversal + system_reversal + failed_credited
+        month_dt = row["month"]
+        monthly_stats.append(
+            {
+                "label": timezone.localtime(month_dt).strftime("%B %Y") if month_dt else "—",
+                "files": row["files"],
+                "total_rows": row["total_rows"] or 0,
+                "success_count": row["success_count"] or 0,
+                "success_amount": round(row["success_amount"] or 0, 2),
+                "failed_count": failed,
+                "failed_amount": round((row["failed_amount"] or 0) - (row["failed_credited_amount"] or 0), 2),
+                "manual_reversal_count": reversal,
+                "system_reversal_count": system_reversal,
+                "total_reversal": total_reversal,
+                "timeout_count": row["timeout_count"] or 0,
+            }
+        )
+
+    daily_stats, chart_points = _build_daily_stats(successful_logs)
 
     daily_paginator = Paginator(daily_stats, PAGE_SIZE)
     daily_page = daily_paginator.get_page(request.GET.get("page"))
@@ -1363,10 +1417,125 @@ def export_aggregator_report_view(request):
     return _finalize_xlsx(wb, f"aggregator_report_{suffix}.xlsx")
 
 
+_DAY_FILL = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
+_DAY_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=12)
+_DAY_SUB_FONT = Font(name="Calibri", italic=True, size=9.5, color="555555")
+_SUBHEAD_FILL = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+_SUBHEAD_FONT = Font(name="Calibri", bold=True, size=10, color="1D4ED8")
+_ROW_LABEL_FONT = Font(name="Calibri", bold=True, size=10.5)
+_THIN = Side(style="thin", color="D0D0D0")
+_CELL_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+_MONEY_FMT = "#,##0.00"
+_DAY_REPORT_COLS = 4  # Category/label | Count | Amount | Charge
+
+
+def _write_day_subtable_header(ws, row: int, headers: list) -> int:
+    for i, h in enumerate(headers, start=1):
+        c = ws.cell(row=row, column=i, value=h)
+        c.font = _SUBHEAD_FONT
+        c.fill = _SUBHEAD_FILL
+        c.border = _CELL_BORDER
+        c.alignment = Alignment(horizontal="center" if i > 1 else "left", vertical="center")
+    return row + 1
+
+
+def _write_day_row(ws, row: int, values: list, label_bold: bool = True) -> int:
+    for i, v in enumerate(values, start=1):
+        c = ws.cell(row=row, column=i, value=v)
+        c.border = _CELL_BORDER
+        if i == 1:
+            c.font = _ROW_LABEL_FONT if label_bold else _DEFAULT_FONT
+        else:
+            c.font = _DEFAULT_FONT
+            c.alignment = Alignment(horizontal="right")
+            if isinstance(v, (int, float)) and i in (3, 4):
+                c.number_format = _MONEY_FMT
+    return row + 1
+
+
+def _write_single_day_report(ws, row: int, detail: dict) -> int:
+    """Write one day's full reconciliation report — laid out exactly like
+    the website's "click a day for the full reconciliation report" modal
+    (Reconciliation summary / Failure reasons / Other checks), instead of
+    packing everything into one very wide row. Returns the next free row."""
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=_DAY_REPORT_COLS)
+    head_cell = ws.cell(row=row, column=1, value=detail["day"])
+    head_cell.font = _DAY_FONT
+    head_cell.alignment = Alignment(horizontal="left", vertical="center")
+    for c in range(1, _DAY_REPORT_COLS + 1):
+        ws.cell(row=row, column=c).fill = _DAY_FILL
+    ws.row_dimensions[row].height = 20
+    row += 1
+
+    sub_bits = [
+        f"{detail['files']} file(s)",
+        f"{detail['total_rows']} txns scanned",
+        f"{detail['unique_new_txns']} unique new txn(s)",
+    ]
+    if detail.get("data_through_at"):
+        sub_bits.append(f"data through {detail['data_through_at']}")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=_DAY_REPORT_COLS)
+    sub_cell = ws.cell(row=row, column=1, value=" · ".join(sub_bits))
+    sub_cell.font = _DAY_SUB_FONT
+    row += 2
+
+    # --- Reconciliation summary -----------------------------------------
+    row = _write_day_subtable_header(ws, row, ["Category", "Count", "Amount (Rs.)", "Charge (Rs.)"])
+    summary_rows = [
+        ("Success", detail["success"]["count"], detail["success"]["amount"], None),
+        ("Manual reversal", detail["manual_reversal"]["count"], detail["manual_reversal"]["amount"], detail["manual_reversal"]["charge"]),
+        ("System reversal", detail["system_reversal"]["count"], detail["system_reversal"]["amount"], detail["system_reversal"]["charge"]),
+        ("Failed", detail["failed"]["count"], detail["failed"]["amount"], detail["failed"]["charge"]),
+        ("Failed but credited", detail["failed_credited"]["count"], detail["failed_credited"]["amount"], None),
+        ("Already reversed", detail["already_reversed"]["count"], detail["already_reversed"]["amount"], None),
+        ("Timeout", detail["timeout"]["count"], detail["timeout"]["amount"], None),
+    ]
+    for label, count, amount, charge in summary_rows:
+        row = _write_day_row(ws, row, [label, count, amount, charge if charge is not None else "—"])
+    row += 1
+
+    # --- Failure reasons ---------------------------------------------------
+    if detail["top_reasons"]:
+        row = _write_day_subtable_header(ws, row, ["Failure reason", "Count", "% of failures", ""])
+        for tr in detail["top_reasons"]:
+            row = _write_day_row(ws, row, [tr["reason"], tr["count"], f"{tr['pct']}%", ""], label_bold=False)
+        row += 1
+
+    # --- Other checks --------------------------------------------------
+    row = _write_day_subtable_header(ws, row, ["Other checks", "", "", "Value"])
+    other_rows = [
+        ("Double-reversals prevented (last-file check)", detail["duplicate_skipped"]),
+        ("Overlapping-window duplicates skipped", detail["duplicate_source_skipped"]),
+        ("Prabhu Bank reversal rows", detail["prabhu_rerouted"]),
+        ("Unrecognized Debtor Bank rows", detail["unrecognized_debtor_bank_rows"]),
+        ("Source data through", detail["data_through_at"] or "—"),
+        ("Processing time (ms)", detail["processing_ms"]),
+    ]
+    for label, value in other_rows:
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=_DAY_REPORT_COLS - 1)
+        lc = ws.cell(row=row, column=1, value=label)
+        lc.font = _DEFAULT_FONT
+        lc.border = _CELL_BORDER
+        for c in range(2, _DAY_REPORT_COLS):
+            ws.cell(row=row, column=c).border = _CELL_BORDER
+        vc = ws.cell(row=row, column=_DAY_REPORT_COLS, value=value)
+        vc.font = _DEFAULT_FONT
+        vc.border = _CELL_BORDER
+        vc.alignment = Alignment(horizontal="right")
+        row += 1
+
+    row += 2  # blank separator before the next day
+    return row
+
+
 @login_required
 def export_day_breakdown_view(request):
     """Every day in the current filter (not just the paginated page shown
-    on-screen), with the same red-flag-corrected numbers as the dashboard.
+    on-screen), laid out as a stack of per-day report cards — same
+    structure as the dashboard's "click a day for the full reconciliation
+    report" modal (Reconciliation summary / Failure reasons / Other
+    checks) — instead of one very wide, hard-to-read row per day.
+
     If ?day=YYYY-MM-DD is given (from the day modal's download button),
     the workbook is narrowed down to just that one day."""
     year_month = _apply_year_month_filter(request)
@@ -1384,62 +1553,20 @@ def export_day_breakdown_view(request):
         period = single_day
         suffix = single_day
 
-    daily_qs = (
-        successful_logs.annotate(day=TruncDate("created_at"))
-        .values("day")
-        .annotate(
-            files=Count("id"),
-            total_rows=Sum("total_rows"),
-            duplicate_source_skipped=Sum("duplicate_source_skipped"),
-            success_count=Sum("success_count"),
-            failed_total=Sum("failed_total"),
-            reversal_manual_kept=Sum("reversal_manual_kept"),
-            reversal_system_count=Sum("reversal_system_count"),
-            timeout_count=Sum("timeout_count"),
-            failed_credited_count=Sum("failed_credited_count"),
-            already_reversed_count=Sum("already_reversed_count"),
-            duplicate_skipped=Sum("duplicate_skipped"),
-        )
-        .order_by("-day")
-    )
+    daily_stats, _ = _build_daily_stats(successful_logs)
 
     wb, ws = _new_sheet("Day by day")
     ws.cell(row=1, column=1, value="Day by day breakdown").font = _TITLE_FONT
     ws.cell(row=2, column=1, value=f"Period: {period}").font = _DEFAULT_FONT
-    headers = [
-        "Date", "Files", "Txns scanned", "Unique new txns", "Success", "Failed",
-        "Manual reversal", "System reversal", "Total reversal", "Timeout",
-        "Duplicates prevented", "Overlap-skipped",
-    ]
-    header_row = _write_table_header(ws, 4, headers)
-    r = header_row - 1
-    for row in daily_qs:
-        failed_credited = row["failed_credited_count"] or 0
-        already_reversed = row["already_reversed_count"] or 0
-        failed = max(0, (row["failed_total"] or 0) - failed_credited)
-        reversal = max(0, (row["reversal_manual_kept"] or 0) - already_reversed)
-        system_reversal = (row["reversal_system_count"] or 0) + already_reversed
-        total_reversal = reversal + system_reversal + failed_credited
-        total_rows = row["total_rows"] or 0
-        dup_source_skipped = row["duplicate_source_skipped"] or 0
-        r += 1
-        values = [
-            row["day"].strftime("%Y-%m-%d") if row["day"] else "—",
-            row["files"],
-            total_rows,
-            max(0, total_rows - dup_source_skipped),
-            row["success_count"] or 0,
-            failed,
-            reversal,
-            system_reversal,
-            total_reversal,
-            row["timeout_count"] or 0,
-            row["duplicate_skipped"] or 0,
-            dup_source_skipped,
-        ]
-        for i, v in enumerate(values, start=1):
-            ws.cell(row=r, column=i, value=v)
-    _style_data_rows(ws, header_row, len(headers))
-    _autosize(ws)
+
+    row = 4
+    for day_row in daily_stats:
+        row = _write_single_day_report(ws, row, day_row["detail"])
+
+    ws.column_dimensions["A"].width = 38
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 18
+    ws.column_dimensions["D"].width = 18
+    ws.freeze_panes = "A4"
 
     return _finalize_xlsx(wb, f"day_by_day_breakdown_{suffix}.xlsx")

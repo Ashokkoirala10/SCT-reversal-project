@@ -10,6 +10,7 @@ urlpatterns = [
     path("logout/", auth_views.LogoutView.as_view(next_page="core:login"), name="logout"),
     path("", views.upload_view, name="upload"),
     path("bank-statement/", views.bank_statement_upload_view, name="bank_statement_upload"),
+    path("bank-statement/add-bank/", views.add_bank_account_view, name="add_bank_account"),
     path("result/<int:log_id>/", views.result_view, name="result"),
     path("toggle-passed/<int:log_id>/", views.toggle_passed_view, name="toggle_passed"),
     path("download/<int:log_id>/<str:kind>/", views.download_file_view, name="download_file"),

@@ -1,9 +1,16 @@
 {% extends "core/base.html" %}
 {% block content %}
-<div class="card" style="max-width:640px; margin:0 auto; max-height:100%; overflow-y:auto;">
-    <h2>Check against bank statement</h2>
+<div class="card" style="max-width:720px; margin:0 auto; max-height:100%; overflow-y:auto;">
+    <h2>Extra</h2>
 
+    {% if bank_form %}
+    <div class="extra-tabs">
+        <button type="button" class="extra-tab-btn active" data-extra-tab="check" onclick="showExtraTab('check')">Check bank statement</button>
+        <button type="button" class="extra-tab-btn" data-extra-tab="addbank" onclick="showExtraTab('addbank')">Add bank account</button>
+    </div>
+    {% endif %}
 
+    <div id="extra-tab-check">
     <div class="info-box">
         You can upload a <strong>Global IME Bank</strong> statement, a <strong>Prabhu Bank</strong> statement
         (up to 4 files, e.g. several daily exports), or <strong>both at once</strong> - whatever you provide is
@@ -40,6 +47,77 @@
         Expected statement columns: <code>S.N, ENTRY TYPE, REMARKS, AMOUNT, DATE</code> (.csv or .xlsx).
 
     </p>
+    </div>
+
+    {% if bank_form %}
+    <div id="extra-tab-addbank" style="display:none;">
+        <div class="info-box">
+            Add a new <strong>Debtor Bank &rarr; Debit Account</strong> mapping — used to fill in the
+            "Debit Account Number" column on reversal rows, and (when "Is own bank" is ticked) to decide
+            On-Us determination.
+        </div>
+
+        <form method="post" action="{% url 'core:add_bank_account' %}" id="add-bank-form">
+            {% csrf_token %}
+            <div class="field">
+                <label for="id_bank_name">{{ bank_form.bank_name.label }}</label>
+                {{ bank_form.bank_name }}
+                {% if bank_form.bank_name.errors %}<div class="error-box">{{ bank_form.bank_name.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_keyword">{{ bank_form.keyword.label }}</label>
+                {{ bank_form.keyword }}
+                <p class="muted" style="font-size:12.5px; margin:6px 0 0;">
+                    Upper-cased, case-insensitive substring matched against the "Debtor Bank" column,
+                    e.g. "NICASIA" matches "NIC Asia Bank". Keep it short and specific.
+                </p>
+                {% if bank_form.keyword.errors %}<div class="error-box">{{ bank_form.keyword.errors }}</div>{% endif %}
+            </div>
+            <div class="field">
+                <label for="id_debit_account_number">{{ bank_form.debit_account_number.label }}</label>
+                {{ bank_form.debit_account_number }}
+                {% if bank_form.debit_account_number.errors %}<div class="error-box">{{ bank_form.debit_account_number.errors }}</div>{% endif %}
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ bank_form.is_own_bank }}
+                <label for="id_is_own_bank" style="margin:0;">{{ bank_form.is_own_bank.label }}</label>
+            </div>
+            <div class="field" style="display:flex; align-items:center; gap:8px;">
+                {{ bank_form.is_active }}
+                <label for="id_is_active" style="margin:0;">{{ bank_form.is_active.label }}</label>
+            </div>
+            <button type="submit" class="btn" style="width:100%;">Add bank account</button>
+        </form>
+
+        {% if bank_accounts %}
+        <h3 style="margin-top:22px; font-size:15px;">Currently configured bank accounts</h3>
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Bank name</th>
+                        <th>Keyword</th>
+                        <th>Debit account number</th>
+                        <th>Own bank</th>
+                        <th>Active</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for acc in bank_accounts %}
+                        <tr>
+                            <td>{{ acc.bank_name }}</td>
+                            <td>{{ acc.keyword }}</td>
+                            <td>{{ acc.debit_account_number }}</td>
+                            <td>{% if acc.is_own_bank %}Yes{% else %}—{% endif %}</td>
+                            <td>{% if acc.is_active %}Yes{% else %}No{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
 </div>
 <style>
 /* This page is meant to fit on one screen — the whole document should
@@ -62,6 +140,12 @@ main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; jus
     font-size:15px; line-height:1; padding:0 4px; font-weight:bold;
 }
 .file-chip button:hover { color:#9c0006; }
+.extra-tabs { display:flex; gap:8px; margin-bottom:16px; border-bottom:1px solid #e5e7eb; }
+.extra-tab-btn {
+    background:none; border:none; cursor:pointer; padding:8px 14px;
+    font-size:14px; font-weight:600; color:#6b7280; border-bottom:2px solid transparent;
+}
+.extra-tab-btn.active { color:#1D4ED8; border-bottom-color:#1D4ED8; }
 </style>
 <script>
 document.getElementById('statement-form').addEventListener('submit', function () {
@@ -70,6 +154,17 @@ document.getElementById('statement-form').addEventListener('submit', function ()
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Checking…';
 });
+
+function showExtraTab(tab) {
+    var panels = { check: document.getElementById('extra-tab-check'), addbank: document.getElementById('extra-tab-addbank') };
+    Object.keys(panels).forEach(function (key) {
+        if (!panels[key]) { return; }
+        panels[key].style.display = (key === tab) ? '' : 'none';
+    });
+    document.querySelectorAll('.extra-tab-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-extra-tab') === tab);
+    });
+}
 
 // Lets the user build up a multi-file selection across several separate
 // "Choose files" clicks instead of each click wiping out the previous
